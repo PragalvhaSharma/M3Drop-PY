@@ -1,36 +1,3 @@
-# Copyright (c) 2015, 2016 Genome Research Ltd.
-# Author: Tallulah Andrews <tallulandrews@gmail.com>
-# This file is part of M3Drop.
-
-# M3Drop is free software: you can redistribute it and/or modify it under
-# the terms of the GNU General Public License as published by the Free Software
-# Foundation; either version 2 of the License, or (at your option) any later
-# version.
-
-# This program is distributed in the hope that it will be useful, but WITHOUT
-# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
-
-# You should have received a copy of the GNU General Public License along with
-# this program. If not, see <http://www.gnu.org/licenses/>.
-
-# By: Tallulah Andrews, Senior Ph.D Student,
-# MRC Functional Genomics Unit, University of Oxford.
-#
-# Using three steps takes three sets and creates a labelled three-way Venn Diagram 
-# with areas approximately proportional to the counts.
-# steps:
-# table = ConvertSetstoTable(set1, set2, set3, names)
-# circles = plot_venn_diagram(table)
-# PlaceLabels(circles, table, 1/0) -> last argument indicates whether to place set names within their circle
-
-# Based on Original Code from: http://tolstoy.newcastle.edu.au/R/help/03a/1115.html
-# By: David J. States, M.D., PhD. Professor of Human Genetics, Director of Bioinformatics, 
-# University of Michigan School of Medicine, Ann Arbor, MI, USA
-# Date Downloaded: 10 Apr 2014
-# Areas of circles and areas of pairwise overlaps proportional to counts, 
-# hopes for the best for the 3-way overlap
-
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import fsolve
