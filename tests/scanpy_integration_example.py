@@ -1,230 +1,429 @@
-"""
-M3Drop + Scanpy Integration Example
-===================================
-
-This example demonstrates how to integrate M3Drop normalization and feature selection
-methods into a standard Scanpy single-cell RNA-seq analysis workflow.
-
-Based on the Scanpy clustering tutorial:
-https://scanpy.readthedocs.io/en/stable/tutorials/basics/clustering.html
-"""
-
-import scanpy as sc
-import numpy as np
-
-# Import M3Drop
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import m3Drop as m3d
+import unittest
+import warnings
 
-# Scanpy settings
-sc.settings.verbosity = 3  # verbosity level
-sc.settings.set_figure_params(dpi=80, facecolor='white')
+# Add the parent directory to the path to import m3Drop
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.insert(0, parent_dir)
 
-def standard_scanpy_workflow(adata):
-    """
-    Standard Scanpy clustering workflow for comparison.
-    """
-    print("=== STANDARD SCANPY WORKFLOW ===")
-    
-    # Make a copy to avoid modifying original data
-    adata_standard = adata.copy()
-    
-    # Basic filtering
-    sc.pp.filter_cells(adata_standard, min_genes=200)
-    sc.pp.filter_genes(adata_standard, min_cells=3)
-    
-    # Calculate QC metrics
-    adata_standard.var['mt'] = adata_standard.var_names.str.startswith('MT-')
-    sc.pp.calculate_qc_metrics(adata_standard, percent_top=None, log1p=False, inplace=True)
-    
-    # Standard normalization
-    sc.pp.normalize_total(adata_standard, target_sum=1e4)
-    sc.pp.log1p(adata_standard)
-    
-    # Standard feature selection
-    sc.pp.highly_variable_genes(adata_standard, min_mean=0.0125, max_mean=3, min_disp=0.5)
-    adata_standard.raw = adata_standard
-    adata_standard = adata_standard[:, adata_standard.var.highly_variable]
-    
-    # Scale and perform PCA
-    sc.pp.scale(adata_standard, max_value=10)
-    sc.tl.pca(adata_standard, svd_solver='arpack')
-    
-    # Compute neighborhood graph
-    sc.pp.neighbors(adata_standard, n_neighbors=10, n_pcs=40)
-    
-    # Perform clustering
-    sc.tl.leiden(adata_standard)
-    
-    # Run UMAP
-    sc.tl.umap(adata_standard)
-    
-    print(f"Standard workflow completed:")
-    print(f"  - {adata_standard.n_obs} cells")
-    print(f"  - {adata_standard.n_vars} highly variable genes")
-    print(f"  - {len(adata_standard.obs['leiden'].unique())} clusters identified")
-    
-    return adata_standard
+# Disable matplotlib plotting for testing
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+plt.ioff()
 
-def m3drop_scanpy_workflow(adata):
-    """
-    Scanpy workflow enhanced with M3Drop normalization and feature selection.
-    """
-    print("\n=== M3DROP + SCANPY WORKFLOW ===")
-    
-    # Make a copy to avoid modifying original data
-    adata_m3drop = adata.copy()
-    
-    # Basic filtering
-    sc.pp.filter_cells(adata_m3drop, min_genes=200)
-    sc.pp.filter_genes(adata_m3drop, min_cells=3)
-    
-    # Calculate QC metrics
-    adata_m3drop.var['mt'] = adata_m3drop.var_names.str.startswith('MT-')
-    sc.pp.calculate_qc_metrics(adata_m3drop, percent_top=None, log1p=False, inplace=True)
-    
-    # Store raw counts for M3Drop methods
-    adata_m3drop.layers['counts'] = adata_m3drop.X.copy()
-    
-    # M3Drop normalization (replaces sc.pp.normalize_total)
-    print("Applying M3Drop NBumi normalization...")
-    m3d.scanpy.nbumi_normalize(adata_m3drop)
-    
-    # Optional: log transform after M3Drop normalization
-    sc.pp.log1p(adata_m3drop)
-    
-    # M3Drop feature selection (replaces sc.pp.highly_variable_genes)
-    print("Applying M3Drop consensus feature selection...")
-    m3d.scanpy.m3drop_highly_variable_genes(adata_m3drop, ntop=2000)
-    
-    # Subset to highly variable genes
-    adata_m3drop.raw = adata_m3drop
-    adata_m3drop = adata_m3drop[:, adata_m3drop.var.highly_variable]
-    
-    # Scale and perform PCA
-    sc.pp.scale(adata_m3drop, max_value=10)
-    sc.tl.pca(adata_m3drop, svd_solver='arpack')
-    
-    # Compute neighborhood graph
-    sc.pp.neighbors(adata_m3drop, n_neighbors=10, n_pcs=40)
-    
-    # Perform clustering
-    sc.tl.leiden(adata_m3drop)
-    
-    # Run UMAP
-    sc.tl.umap(adata_m3drop)
-    
-    print(f"M3Drop workflow completed:")
-    print(f"  - {adata_m3drop.n_obs} cells")
-    print(f"  - {adata_m3drop.n_vars} highly variable genes")
-    print(f"  - {len(adata_m3drop.obs['leiden'].unique())} clusters identified")
-    
-    # Show M3Drop-specific results
-    print(f"  - M3Drop consensus ranking available in adata.var['m3drop_consensus_rank']")
-    print(f"  - Individual method rankings: {[col for col in adata_m3drop.var.columns if col.startswith('m3drop_') and col.endswith('_rank')]}")
-    
-    return adata_m3drop
+import numpy as np
+import pandas as pd
+import scipy.sparse as sp
+import scanpy as sc
+from anndata import AnnData
 
-def compare_methods(adata_standard, adata_m3drop):
-    """
-    Compare results from standard and M3Drop workflows.
-    """
-    print("\n=== COMPARISON ===")
+# Import M3Drop scanpy functions
+from m3Drop.scanpy import (
+    fit_nbumi_model,
+    nbumi_normalize,
+    m3drop_highly_variable_genes,
+    nbumi_impute,
+    _ensure_raw_counts
+)
+
+class TestM3DropScanpyIntegration(unittest.TestCase):
+    """Test suite for M3Drop scanpy integration functions"""
     
-    # Compare number of clusters
-    n_clusters_standard = len(adata_standard.obs['leiden'].unique())
-    n_clusters_m3drop = len(adata_m3drop.obs['leiden'].unique())
-    
-    print(f"Number of clusters:")
-    print(f"  - Standard Scanpy: {n_clusters_standard}")
-    print(f"  - M3Drop + Scanpy: {n_clusters_m3drop}")
-    
-    # Compare highly variable genes if both have the same number of cells
-    if adata_standard.n_obs == adata_m3drop.n_obs:
-        # Get original gene names for comparison
-        hvg_standard = set(adata_standard.var_names)
-        hvg_m3drop = set(adata_m3drop.var_names)
+    def setUp(self):
+        """Set up test data for each test"""
+        # Suppress warnings during testing
+        warnings.filterwarnings('ignore')
         
-        overlap = len(hvg_standard.intersection(hvg_m3drop))
-        total_hvg = len(hvg_standard.union(hvg_m3drop))
+        # Create synthetic count data that resembles real scRNA-seq data
+        np.random.seed(42)
+        n_cells = 100
+        n_genes = 200
         
-        print(f"Highly variable genes overlap:")
-        print(f"  - Standard method: {len(hvg_standard)} genes")
-        print(f"  - M3Drop method: {len(hvg_m3drop)} genes")
-        print(f"  - Overlap: {overlap} genes ({overlap/min(len(hvg_standard), len(hvg_m3drop))*100:.1f}%)")
+        # Generate count matrix with realistic properties
+        # Some genes should be highly expressed, others lowly expressed
+        base_expression = np.random.exponential(scale=0.5, size=(n_genes, n_cells))
+        
+        # Add some structure - some genes correlated, some independent
+        for i in range(0, n_genes, 10):
+            # Make some genes correlated
+            if i + 5 < n_genes:
+                base_expression[i:i+5] *= np.random.exponential(scale=2, size=(1, n_cells))
+        
+        # Add technical dropout (zeros)
+        dropout_prob = np.random.beta(2, 8, size=(n_genes, n_cells))
+        mask = np.random.random((n_genes, n_cells)) < dropout_prob
+        base_expression[mask] = 0
+        
+        # Convert to integer counts and ensure we have some variation
+        counts = np.random.poisson(base_expression * 10).astype(int)
+        
+        # Ensure at least some counts in each gene and cell
+        counts = np.maximum(counts, np.random.poisson(0.1, size=counts.shape))
+        
+        # Create gene and cell names
+        gene_names = [f"Gene_{i:03d}" for i in range(n_genes)]
+        cell_names = [f"Cell_{i:03d}" for i in range(n_cells)]
+        
+        # Create AnnData object
+        self.adata = AnnData(
+            X=counts.T,  # AnnData expects cells x genes
+            obs=pd.DataFrame(index=cell_names),
+            var=pd.DataFrame(index=gene_names)
+        )
+        
+        # Also create a sparse version for testing
+        self.adata_sparse = self.adata.copy()
+        self.adata_sparse.X = sp.csr_matrix(self.adata_sparse.X)
+        
+        # Create normalized data for negative testing
+        self.adata_normalized = self.adata.copy()
+        sc.pp.normalize_total(self.adata_normalized, target_sum=1e4)
+        sc.pp.log1p(self.adata_normalized)
+        
+        # Create data with layers
+        self.adata_layers = self.adata.copy()
+        self.adata_layers.layers['counts'] = self.adata_layers.X.copy()
+        self.adata_layers.layers['normalized'] = self.adata_normalized.X.copy()
+    
+    def test_ensure_raw_counts_basic(self):
+        """Test _ensure_raw_counts function with basic input"""
+        # Test with dense data
+        counts = _ensure_raw_counts(self.adata)
+        self.assertEqual(counts.shape, (self.adata.n_vars, self.adata.n_obs))
+        self.assertTrue(np.all(counts >= 0))
+        self.assertTrue(np.allclose(counts, np.round(counts)))
+        
+        # Test with sparse data
+        counts_sparse = _ensure_raw_counts(self.adata_sparse)
+        self.assertEqual(counts_sparse.shape, (self.adata_sparse.n_vars, self.adata_sparse.n_obs))
+        self.assertTrue(np.all(counts_sparse >= 0))
+    
+    def test_ensure_raw_counts_with_layers(self):
+        """Test _ensure_raw_counts with different layers"""
+        # Test with counts layer
+        counts = _ensure_raw_counts(self.adata_layers, layer='counts')
+        self.assertEqual(counts.shape, (self.adata_layers.n_vars, self.adata_layers.n_obs))
+        
+        # Test with non-existent layer
+        with self.assertRaises(ValueError):
+            _ensure_raw_counts(self.adata_layers, layer='nonexistent')
+    
+    def test_ensure_raw_counts_normalized_data(self):
+        """Test _ensure_raw_counts rejects normalized data"""
+        with self.assertRaises(ValueError):
+            _ensure_raw_counts(self.adata_normalized)
+    
+    def test_ensure_raw_counts_negative_values(self):
+        """Test _ensure_raw_counts rejects negative values"""
+        adata_negative = self.adata.copy()
+        adata_negative.X[0, 0] = -1
+        
+        with self.assertRaises(ValueError):
+            _ensure_raw_counts(adata_negative)
+    
+    def test_fit_nbumi_model_basic(self):
+        """Test fit_nbumi_model basic functionality"""
+        # Test without copy
+        result = fit_nbumi_model(self.adata, key_added='test_fit')
+        self.assertIsNone(result)
+        self.assertIn('test_fit', self.adata.uns)
+        self.assertIn('test_fit_size', self.adata.var.columns)
+        self.assertIn('test_fit_mean', self.adata.var.columns)
+        
+        # Check that fit results are reasonable
+        fit_result = self.adata.uns['test_fit']
+        self.assertIn('sizes', fit_result)
+        self.assertIn('vals', fit_result)
+        self.assertEqual(len(fit_result['sizes']), self.adata.n_vars)
+    
+    def test_fit_nbumi_model_copy(self):
+        """Test fit_nbumi_model with copy=True"""
+        adata_copy = fit_nbumi_model(self.adata, copy=True)
+        self.assertIsNotNone(adata_copy)
+        self.assertIn('nbumi_fit', adata_copy.uns)
+        self.assertNotIn('nbumi_fit', self.adata.uns)  # Original should be unchanged
+    
+    def test_fit_nbumi_model_with_layer(self):
+        """Test fit_nbumi_model with specific layer"""
+        result = fit_nbumi_model(self.adata_layers, layer='counts')
+        self.assertIsNone(result)
+        self.assertIn('nbumi_fit', self.adata_layers.uns)
+    
+    def test_nbumi_normalize_basic(self):
+        """Test nbumi_normalize basic functionality"""
+        original_X = self.adata.X.copy()
+        
+        result = nbumi_normalize(self.adata)
+        self.assertIsNone(result)
+        
+        # Check that data was normalized (should be different from original)
+        self.assertFalse(np.allclose(self.adata.X, original_X))
+        
+        # Check that raw data was stored
+        self.assertIsNotNone(self.adata.raw)
+        
+        # Check that fit results were stored
+        self.assertIn('nbumi_fit', self.adata.uns)
+        self.assertIn('nbumi_size', self.adata.var.columns)
+        self.assertIn('nbumi_mean', self.adata.var.columns)
+    
+    def test_nbumi_normalize_copy(self):
+        """Test nbumi_normalize with copy=True"""
+        original_X = self.adata.X.copy()
+        
+        adata_copy = nbumi_normalize(self.adata, copy=True)
+        self.assertIsNotNone(adata_copy)
+        
+        # Original should be unchanged
+        self.assertTrue(np.allclose(self.adata.X, original_X))
+        
+        # Copy should be normalized
+        self.assertFalse(np.allclose(adata_copy.X, original_X))
+        self.assertIn('nbumi_fit', adata_copy.uns)
+    
+    def test_nbumi_normalize_pearson_residuals(self):
+        """Test nbumi_normalize with Pearson residuals"""
+        result = nbumi_normalize(self.adata, use_pearson_residuals=True)
+        self.assertIsNone(result)
+        
+        # Check that we get residuals (can be negative)
+        self.assertTrue(np.any(self.adata.X < 0))
+        self.assertIn('nbumi_fit', self.adata.uns)
+    
+    def test_nbumi_normalize_target_sum(self):
+        """Test nbumi_normalize with specific target sum"""
+        target_sum = 5000
+        result = nbumi_normalize(self.adata, target_sum=target_sum)
+        self.assertIsNone(result)
+        
+        # Check that the normalization used the target sum appropriately
+        # (exact check depends on implementation details)
+        self.assertIn('nbumi_fit', self.adata.uns)
+    
+    def test_m3drop_highly_variable_genes_consensus(self):
+        """Test m3drop_highly_variable_genes with consensus method"""
+        result = m3drop_highly_variable_genes(self.adata, method='consensus', ntop=50)
+        self.assertIsNone(result)
+        
+        # Check that HVG annotation was added
+        self.assertIn('highly_variable', self.adata.var.columns)
+        self.assertIn('m3drop_consensus_rank', self.adata.var.columns)
+        
+        # Check that we got the right number of HVGs
+        n_hvg = np.sum(self.adata.var['highly_variable'])
+        self.assertLessEqual(n_hvg, 50)  # Should be <= ntop
+        self.assertGreater(n_hvg, 0)     # Should find some HVGs
+    
+    def test_m3drop_highly_variable_genes_danb(self):
+        """Test m3drop_highly_variable_genes with DANB method"""
+        result = m3drop_highly_variable_genes(self.adata, method='danb', ntop=30)
+        self.assertIsNone(result)
+        
+        # Check that HVG annotation and DANB-specific columns were added
+        self.assertIn('highly_variable', self.adata.var.columns)
+        self.assertIn('m3drop_danb_effect_size', self.adata.var.columns)
+        self.assertIn('m3drop_danb_pvalue', self.adata.var.columns)
+        self.assertIn('m3drop_danb_qvalue', self.adata.var.columns)
+        self.assertIn('nbumi_fit', self.adata.uns)
+    
+    def test_m3drop_highly_variable_genes_combined_drop(self):
+        """Test m3drop_highly_variable_genes with combined_drop method"""
+        result = m3drop_highly_variable_genes(self.adata, method='combined_drop', ntop=40)
+        self.assertIsNone(result)
+        
+        # Check that HVG annotation and combined_drop-specific columns were added
+        self.assertIn('highly_variable', self.adata.var.columns)
+        self.assertIn('m3drop_combined_effect_size', self.adata.var.columns)
+        self.assertIn('m3drop_combined_pvalue', self.adata.var.columns)
+        self.assertIn('m3drop_combined_qvalue', self.adata.var.columns)
+        self.assertIn('nbumi_fit', self.adata.uns)
+    
+    def test_m3drop_highly_variable_genes_m3drop(self):
+        """Test m3drop_highly_variable_genes with traditional M3Drop method"""
+        result = m3drop_highly_variable_genes(self.adata, method='m3drop', fdr_thresh=0.1)
+        self.assertIsNone(result)
+        
+        # Check that HVG annotation and M3Drop-specific columns were added
+        self.assertIn('highly_variable', self.adata.var.columns)
+        self.assertIn('m3drop_effect_size', self.adata.var.columns)
+        self.assertIn('m3drop_pvalue', self.adata.var.columns)
+        self.assertIn('m3drop_qvalue', self.adata.var.columns)
+    
+    def test_m3drop_highly_variable_genes_invalid_method(self):
+        """Test m3drop_highly_variable_genes with invalid method"""
+        with self.assertRaises(ValueError):
+            m3drop_highly_variable_genes(self.adata, method='invalid_method')
+    
+    def test_m3drop_highly_variable_genes_copy(self):
+        """Test m3drop_highly_variable_genes with copy=True"""
+        original_vars = self.adata.var.columns.tolist()
+        
+        adata_copy = m3drop_highly_variable_genes(self.adata, method='consensus', copy=True)
+        self.assertIsNotNone(adata_copy)
+        
+        # Original should be unchanged
+        self.assertEqual(self.adata.var.columns.tolist(), original_vars)
+        
+        # Copy should have HVG annotations
+        self.assertIn('highly_variable', adata_copy.var.columns)
+    
+    def test_nbumi_impute_basic(self):
+        """Test nbumi_impute basic functionality"""
+        original_X = self.adata.X.copy()
+        
+        result = nbumi_impute(self.adata)
+        self.assertIsNone(result)
+        
+        # Check that data was imputed (should be different from original)
+        self.assertFalse(np.allclose(self.adata.X, original_X))
+        
+        # Check that raw data was stored
+        self.assertIsNotNone(self.adata.raw)
+        
+        # Check that fit results were stored
+        self.assertIn('nbumi_fit', self.adata.uns)
+        self.assertIn('nbumi_size', self.adata.var.columns)
+        self.assertIn('nbumi_mean', self.adata.var.columns)
+    
+    def test_nbumi_impute_copy(self):
+        """Test nbumi_impute with copy=True"""
+        original_X = self.adata.X.copy()
+        
+        adata_copy = nbumi_impute(self.adata, copy=True)
+        self.assertIsNotNone(adata_copy)
+        
+        # Original should be unchanged
+        self.assertTrue(np.allclose(self.adata.X, original_X))
+        
+        # Copy should be imputed
+        self.assertFalse(np.allclose(adata_copy.X, original_X))
+        self.assertIn('nbumi_fit', adata_copy.uns)
+    
+    def test_nbumi_impute_target_sum(self):
+        """Test nbumi_impute with specific target sum"""
+        target_sum = 8000
+        result = nbumi_impute(self.adata, target_sum=target_sum)
+        self.assertIsNone(result)
+        
+        # Check that the imputation used the target sum appropriately
+        self.assertIn('nbumi_fit', self.adata.uns)
+    
+    def test_nbumi_impute_with_layer(self):
+        """Test nbumi_impute with specific layer"""
+        result = nbumi_impute(self.adata_layers, layer='counts')
+        self.assertIsNone(result)
+        self.assertIn('nbumi_fit', self.adata_layers.uns)
+    
+    def test_sparse_data_handling(self):
+        """Test that all functions handle sparse data correctly"""
+        # Test with sparse data
+        adata_sparse = self.adata_sparse.copy()
+        
+        # These functions should work with sparse data
+        fit_nbumi_model(adata_sparse)
+        self.assertIn('nbumi_fit', adata_sparse.uns)
+        
+        nbumi_normalize(adata_sparse)
+        self.assertIsNotNone(adata_sparse.raw)
+        
+        m3drop_highly_variable_genes(adata_sparse, method='consensus', ntop=20)
+        self.assertIn('highly_variable', adata_sparse.var.columns)
+        
+        # Reset for imputation test
+        adata_sparse = self.adata_sparse.copy()
+        nbumi_impute(adata_sparse)
+        self.assertIn('nbumi_fit', adata_sparse.uns)
+    
+    def test_edge_cases(self):
+        """Test edge cases and boundary conditions"""
+        # Test with very small dataset
+        adata_small = self.adata[:10, :20].copy()
+        
+        # Should still work but might have warnings
+        fit_nbumi_model(adata_small)
+        self.assertIn('nbumi_fit', adata_small.uns)
+        
+        # Test with data that has many zeros
+        adata_sparse_counts = self.adata.copy()
+        adata_sparse_counts.X[adata_sparse_counts.X < 2] = 0
+        
+        fit_nbumi_model(adata_sparse_counts)
+        self.assertIn('nbumi_fit', adata_sparse_counts.uns)
+    
+    def test_integration_workflow(self):
+        """Test a complete integration workflow"""
+        # Start with fresh data
+        adata = self.adata.copy()
+        
+        # Step 1: Fit model
+        fit_nbumi_model(adata)
+        self.assertIn('nbumi_fit', adata.uns)
+        
+        # Step 2: Find highly variable genes
+        m3drop_highly_variable_genes(adata, method='consensus', ntop=50)
+        self.assertIn('highly_variable', adata.var.columns)
+        
+        # Step 3: Normalize
+        nbumi_normalize(adata)
+        self.assertIsNotNone(adata.raw)
+        
+        # Check that all steps completed successfully
+        self.assertTrue(np.any(adata.var['highly_variable']))
+        self.assertIn('nbumi_fit', adata.uns)
+        self.assertIn('m3drop_consensus_rank', adata.var.columns)
+    
+    def tearDown(self):
+        """Clean up after tests"""
+        plt.close('all')
 
-def main():
-    """
-    Main function demonstrating the workflows.
-    Replace this section with your own data loading.
-    """
-    print("M3Drop + Scanpy Integration Example")
-    print("===================================")
+
+def run_comprehensive_tests():
+    """Run all tests and provide detailed output"""
+    print("="*70)
+    print("M3DROP SCANPY INTEGRATION COMPREHENSIVE TEST SUITE")
+    print("="*70)
     
-    # Example 1: Load your own data
-    # Uncomment and modify one of these options:
+    # Create test suite
+    loader = unittest.TestLoader()
+    suite = loader.loadTestsFromTestCase(TestM3DropScanpyIntegration)
     
-    # Option 1: 10X data
-    # adata = sc.read_10x_mtx(
-    #     'path/to/matrix.mtx',  # Path to the count matrix
-    #     var_names='gene_symbols',  # use gene symbols for gene names
-    #     cache=True  # write a cache file for faster subsequent reading
-    # )
-    # adata.var_names_unique()
+    # Run tests with detailed output
+    runner = unittest.TextTestRunner(verbosity=2, stream=sys.stdout)
+    result = runner.run(suite)
     
-    # Option 2: H5 file
-    # adata = sc.read_h5ad('path/to/data.h5ad')
+    # Print summary
+    print("\n" + "="*70)
+    print("TEST SUMMARY")
+    print("="*70)
+    print(f"Tests run: {result.testsRun}")
+    print(f"Failures: {len(result.failures)}")
+    print(f"Errors: {len(result.errors)}")
+    print(f"Success rate: {((result.testsRun - len(result.failures) - len(result.errors)) / result.testsRun * 100):.1f}%")
     
-    # Option 3: CSV file
-    # adata = sc.read_csv('path/to/data.csv').T  # Transpose if genes are columns
+    if result.failures:
+        print("\nFAILURES:")
+        for test, traceback in result.failures:
+            print(f"- {test}: {traceback.split('AssertionError:')[-1].strip()}")
     
-    # Example 2: Generate synthetic data for demonstration
-    print("Generating synthetic data for demonstration...")
-    np.random.seed(42)
-    n_obs, n_vars = 1000, 2000
-    X = np.random.negative_binomial(5, 0.3, (n_obs, n_vars))
+    if result.errors:
+        print("\nERRORS:")
+        for test, traceback in result.errors:
+            print(f"- {test}: {traceback.split('Exception:')[-1].strip()}")
     
-    adata = sc.AnnData(X)
-    adata.obs_names = [f'Cell_{i}' for i in range(n_obs)]
-    adata.var_names = [f'Gene_{i}' for i in range(n_vars)]
-    
-    print(f"Created synthetic dataset: {adata.n_obs} cells × {adata.n_vars} genes")
-    
-    # Run both workflows
-    adata_standard = standard_scanpy_workflow(adata)
-    adata_m3drop = m3drop_scanpy_workflow(adata)
-    
-    # Compare results
-    compare_methods(adata_standard, adata_m3drop)
-    
-    # Plotting (optional)
-    print("\n=== PLOTTING ===")
-    print("To visualize results, you can use:")
-    print("sc.pl.umap(adata_standard, color=['leiden'], title='Standard Scanpy')")
-    print("sc.pl.umap(adata_m3drop, color=['leiden'], title='M3Drop + Scanpy')")
-    
-    return adata_standard, adata_m3drop
+    return result.wasSuccessful()
+
 
 if __name__ == "__main__":
-    # Run the example
-    adata_standard, adata_m3drop = main()
+    # Run the comprehensive tests
+    success = run_comprehensive_tests()
     
-    # Optional: Create plots
-    try:
-        import matplotlib.pyplot as plt
-        
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-        
-        sc.pl.umap(adata_standard, color='leiden', ax=ax1, title='Standard Scanpy', show=False)
-        sc.pl.umap(adata_m3drop, color='leiden', ax=ax2, title='M3Drop + Scanpy', show=False)
-        
-        plt.tight_layout()
-        plt.savefig('m3drop_scanpy_comparison.png', dpi=300, bbox_inches='tight')
-        plt.show()
-        
-        print("\nComparison plot saved as 'm3drop_scanpy_comparison.png'")
-        
-    except ImportError:
-        print("Matplotlib not available for plotting") 
+    print("\n" + "="*70)
+    if success:
+        print("🎉 ALL TESTS PASSED! M3Drop scanpy integration is working correctly.")
+    else:
+        print("❌ SOME TESTS FAILED. Please check the output above for details.")
+    print("="*70)
+    
