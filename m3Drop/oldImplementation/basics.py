@@ -59,8 +59,8 @@ def M3DropConvertData(input_data, is_log=False, is_counts=False, pseudocount=1):
     if is_counts:
         sf = counts.sum(axis=0)
         sf[sf == 0] = 1 # Avoid division by zero
-        # Normalize using median scaling factor (as in R)
-        norm_counts = (counts / sf) * np.median(sf)
+        # Normalize to CPM (counts per million)
+        norm_counts = (counts / sf) * 1e6
         return remove_undetected_genes(norm_counts)
     
     # 4. If data is already normalized (not raw counts), just filter

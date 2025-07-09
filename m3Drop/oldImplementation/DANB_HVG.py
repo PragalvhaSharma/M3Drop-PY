@@ -27,6 +27,14 @@ def NBumiHVG(counts, fit, fdr_thresh=0.05, suppress_plot=False, method="DANB"):
     from statsmodels.stats.multitest import multipletests
     import statsmodels.api as sm
 
+    # Ensure we have a DataFrame with proper index
+    if isinstance(counts, np.ndarray):
+        gene_names = [f"Gene_{i}" for i in range(counts.shape[0])]
+        counts = pd.DataFrame(counts, index=gene_names)
+    elif not hasattr(counts, 'index'):
+        gene_names = [f"Gene_{i}" for i in range(counts.shape[0])]
+        counts = pd.DataFrame(counts, index=gene_names)
+
     n = counts.shape[1]
 
     if method == "DANB":
