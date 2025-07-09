@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import scanpy as sc
 import pandas as pd
-from m3Drop.feature_selection import BrenneckeGetVariableGenes
+from m3Drop.Brennecke_implementation import BrenneckeGetVariableGenes
 
 # Step 1: Load your AnnData (.h5ad) file
 # Replace with the actual path to your file if different.

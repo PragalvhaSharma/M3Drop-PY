@@ -4,7 +4,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import scanpy as sc
 import pandas as pd
-from m3Drop.normalization import M3DropCleanData
+from m3Drop.Normalization import M3DropCleanData
+import numpy as np
 
 # Step 1: Load your AnnData (.h5ad) file
 h5ad_file = "/Users/pragalvhasharma/Downloads/PragGOToDocuments/Blanc/school/mcpServers/newM3dUpdate/m3DropNew/data/GSM8267529_G-P28_raw_matrix.h5ad"
@@ -28,8 +29,8 @@ print("Data after cleaning:")
 print(cleaned_data)
 print(f"Original shape: {raw_counts.shape}, Cleaned shape: {cleaned_data.shape}")
 
-# Basic check to ensure the output is a DataFrame and that some filtering happened
-assert isinstance(cleaned_data, pd.DataFrame)
+# Basic check to ensure the output is a numpy array and that some filtering happened
+assert isinstance(cleaned_data, np.ndarray)
 assert cleaned_data.shape[0] < raw_counts.shape[0] 
 assert cleaned_data.shape[1] <= raw_counts.shape[1]
 

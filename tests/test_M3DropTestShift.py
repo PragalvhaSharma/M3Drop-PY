@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import scanpy as sc
 import pandas as pd
-from m3Drop.differential_expression import M3DropTestShift
+from m3Drop.Extremes import M3DropTestShift
 
 # Step 1: Load your AnnData (.h5ad) file
 h5ad_file = "/Users/pragalvhasharma/Downloads/PragGOToDocuments/Blanc/school/mcpServers/newM3dUpdate/m3DropNew/data/GSM8267529_G-P28_raw_matrix.h5ad"

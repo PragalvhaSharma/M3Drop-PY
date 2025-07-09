@@ -1,6 +1,10 @@
 import sys
 import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+# Add the parent directory to the path to import m3Drop
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.insert(0, parent_dir)
 
 # Disable ALL matplotlib plotting before importing anything else
 import matplotlib
@@ -23,8 +27,16 @@ def test_nbumi_functions_no_plots():
     # Test results dictionary
     results = {}
     
-    # Step 1: Load the data
-    h5ad_file = "/Users/pragalvhasharma/Downloads/PragGOToDocuments/Blanc/school/mcpServers/newM3dUpdate/m3DropNew/data/GSM8267529_G-P28_raw_matrix.h5ad"
+    # Step 1: Load the data using relative path
+    data_dir = os.path.join(parent_dir, "data")
+    h5ad_file = os.path.join(data_dir, "GSM8267529_G-P28_raw_matrix.h5ad")
+    
+    # Check if data file exists
+    if not os.path.exists(h5ad_file):
+        print(f"✗ Data file not found: {h5ad_file}")
+        print("Please ensure the data file exists in the correct location.")
+        results["Data Loading"] = "FAILED - FILE NOT FOUND"
+        return results
     
     try:
         adata = sc.read_h5ad(h5ad_file)
@@ -112,7 +124,12 @@ def test_nbumi_functions_no_plots():
         
         try:
             print("Testing NBumiHVG...")
-            hvg = NBumiHVG(converted_data.astype(int), fit_model, suppress_plot=True)
+            # Convert to int but keep as DataFrame for NBumiHVG
+            if isinstance(converted_data, pd.DataFrame):
+                hvg_data = converted_data.astype(int)
+            else:
+                hvg_data = pd.DataFrame(converted_data.astype(int))
+            hvg = NBumiHVG(hvg_data, fit_model, suppress_plot=True)
             print(f"✓ NBumiHVG PASSED")
             results["NBumiHVG"] = "PASSED"
         except Exception as e:

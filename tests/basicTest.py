@@ -3,7 +3,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import scanpy as sc
-from m3Drop.feature_selection import M3DropGetExtremes
+from m3Drop.Extremes import M3DropGetExtremes
 
 # Step 1: Load the required libraries are imported above.
 
