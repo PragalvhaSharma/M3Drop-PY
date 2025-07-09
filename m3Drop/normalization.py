@@ -3,6 +3,26 @@ import pandas as pd
 from scipy.stats import norm, nbinom
 import scanpy as sc
 from anndata import AnnData
+from scipy.sparse import issparse
+
+def NBumiFitDispVsMean(fit, suppress_plot=True):
+    """
+    Fits a power-law relationship between mean expression and dispersion.
+    """
+    vals = fit['vals']
+    size_g = fit['sizes']
+    forfit = (fit['sizes'] < np.max(size_g)) & (vals['tjs'] > 0) & (size_g > 0)
+    higher = np.log2(vals['tjs'] / vals['nc']) > 4
+    if np.sum(higher) > 2000:
+        forfit = higher & forfit
+    
+    y = np.log(size_g[forfit])
+    x = np.log((vals['tjs'] / vals['nc'])[forfit])
+    
+    # Using numpy's polyfit for linear regression (degree 1)
+    coeffs = np.polyfit(x, y, 1)
+    # In R's lm, the order is intercept, slope. np.polyfit is [slope, intercept]
+    return coeffs[::-1] # Reverse to match R's coefficient order
 
 def NBumiImputeNorm(counts, fit, total_counts_per_cell=None):
     """
@@ -29,29 +49,12 @@ def NBumiImputeNorm(counts, fit, total_counts_per_cell=None):
     np.ndarray
         Normalized count matrix.
     """
-
+    from scipy.stats import nbinom
+    
     if total_counts_per_cell is None:
-        total_counts_per_cell = np.median(fit['vals']['tis'])
-
-    # Assuming NBumiFitDispVsMean and hidden_shift_size are available
-    # These would need to be translated from the R code as well.
-    # For now, let's assume they exist in some form.
-    # A placeholder for NBumiFitDispVsMean
-    def NBumiFitDispVsMean(fit, suppress_plot=True):
-        vals = fit['vals']
-        size_g = fit['sizes']
-        forfit = (fit['size'] < np.max(size_g)) & (vals['tjs'] > 0) & (size_g > 0)
-        higher = np.log2(vals['tjs'] / vals['nc']) > 4
-        if np.sum(higher) > 2000:
-            forfit = higher & forfit
-        
-        y = np.log(size_g[forfit])
-        x = np.log((vals['tjs'] / vals['nc'])[forfit])
-        
-        # Using numpy's polyfit for linear regression (degree 1)
-        coeffs = np.polyfit(x, y, 1)
-        # In R's lm, the order is intercept, slope. np.polyfit is [slope, intercept]
-        return coeffs[::-1] # Reverse to match R's coefficient order
+        # Convert to numpy array to avoid pandas indexing issues
+        tis_array = np.array(fit['vals']['tis']) if hasattr(fit['vals']['tis'], 'values') else fit['vals']['tis']
+        total_counts_per_cell = np.median(tis_array)
 
     # A placeholder for hidden_shift_size
     def hidden_shift_size(mu_all, size_all, mu_group, coeffs):
@@ -61,12 +64,26 @@ def NBumiImputeNorm(counts, fit, total_counts_per_cell=None):
 
     coeffs = NBumiFitDispVsMean(fit, suppress_plot=True)
     vals = fit['vals']
-    norm_mat = np.zeros_like(counts, dtype=float)
+    
+    # Convert pandas Series to numpy arrays to avoid FutureWarnings
+    tjs = np.array(vals['tjs']) if hasattr(vals['tjs'], 'values') else vals['tjs']
+    tis = np.array(vals['tis']) if hasattr(vals['tis'], 'values') else vals['tis']
+    sizes = np.array(fit['sizes']) if hasattr(fit['sizes'], 'values') else fit['sizes']
+    total = vals['total']
+    
+    # Convert counts to numpy array if needed
+    if hasattr(counts, 'values'):
+        counts_array = counts.values
+    else:
+        counts_array = np.array(counts)
+    
+    norm_mat = np.zeros_like(counts_array, dtype=float)
     normed_ti = total_counts_per_cell
-    normed_mus = vals['tjs'] / vals['total']
+    normed_mus = tjs / total
 
-    for i in range(counts.shape[0]):
-        mu_is = vals['tjs'][i] * vals['tis'] / vals['total']
+    for i in range(counts_array.shape[0]):
+        # Fix: Use proper array operations to avoid tuple indexing
+        mu_is = tjs[i] * tis / total
         
         # scipy.stats.nbinom.cdf is the equivalent of R's pnbinom
         # nbinom in scipy uses n (number of successes) and p (probability of success),
@@ -75,13 +92,16 @@ def NBumiImputeNorm(counts, fit, total_counts_per_cell=None):
         # p = size / (size + mu)
         # n = size
         
-        size = fit['sizes'][i]
+        size = sizes[i]
         p_param = size / (size + mu_is)
-        p_orig = nbinom.cdf(counts[i, :], n=size, p=p_param)
+        
+        # Ensure counts[i, :] is properly indexed
+        counts_row = counts_array[i, :]
+        p_orig = nbinom.cdf(counts_row, n=size, p=p_param)
 
         new_size = hidden_shift_size(
             np.mean(mu_is), 
-            fit['sizes'][i], 
+            sizes[i], 
             normed_mus[i] * normed_ti, 
             coeffs
         )
@@ -183,15 +203,14 @@ def M3DropCleanData(expr_mat, labels=None, is_counts=True, suppress_plot=False, 
     
     expr_mat_filtered = data_list['data']
     labels_filtered = data_list['labels']
-    
-    if gene_names is not None:
-        # This assumes bg__filter_cells doesn't reorder genes
-        gene_names_filtered = gene_names[np.sum(expr_mat_filtered > 0, axis=1) > 0]
 
     detected_genes = np.sum(expr_mat_filtered > 0, axis=1) > 3
     expr_mat_filtered = expr_mat_filtered[detected_genes, :]
+
     if gene_names is not None:
-        gene_names_filtered = gene_names_filtered[detected_genes]
+        gene_names_filtered = gene_names[detected_genes]
+    else:
+        gene_names_filtered = None
 
     if is_counts:
         # Spike-in logic from R code is complex, simplified here
@@ -238,49 +257,48 @@ def M3DropConvertData(input_data, is_log=False, is_counts=False, pseudocount=1):
 
     Returns
     -------
-    np.ndarray
+    pd.DataFrame
         A normalized, non-log-transformed matrix.
     """
     def remove_undetected_genes(mat):
-        if isinstance(mat, pd.DataFrame):
-            detected = mat.sum(axis=1) > 0
+        # Helper to filter out genes with no expression across all cells
+        if not isinstance(mat, pd.DataFrame):
+             raise TypeError("remove_undetected_genes expects a pandas DataFrame.")
+        detected = mat.sum(axis=1) > 0
+        if np.sum(~detected) > 0:
             print(f"Removing {np.sum(~detected)} undetected genes.")
-            return mat[detected]
-        else:
-            detected = np.sum(mat, axis=1) > 0
-            print(f"Removing {np.sum(~detected)} undetected genes.")
-            return mat[detected, :]
+        return mat[detected]
 
+    from scipy.sparse import issparse
+    
+    # 1. Handle Input Type and convert to a pandas DataFrame `counts`
     if isinstance(input_data, AnnData):
-        if 'normcounts' in input_data.layers:
-            return remove_undetected_genes(input_data.layers['normcounts'])
-        elif 'logcounts' in input_data.layers:
-            lognorm = input_data.layers['logcounts']
-            norm = np.expm1(lognorm) if is_log else 2**lognorm - pseudocount
-            return remove_undetected_genes(norm)
-        elif input_data.X is not None:
-             counts = input_data.X
+        if issparse(input_data.X):
+            counts = pd.DataFrame(input_data.X.toarray(), index=input_data.obs_names, columns=input_data.var_names)
         else:
-            raise ValueError("AnnData object does not contain usable expression data.")
-    elif isinstance(input_data, (pd.DataFrame, np.ndarray)):
-        if is_log:
-            lognorm = input_data
-            norm = np.expm1(lognorm) if pseudocount == 0 else 2**lognorm - pseudocount
-            return remove_undetected_genes(norm)
-        elif is_counts:
-            counts = input_data
-        else:
-            return remove_undetected_genes(input_data)
+            counts = pd.DataFrame(input_data.X, index=input_data.obs_names, columns=input_data.var_names)
+    elif isinstance(input_data, pd.DataFrame):
+        counts = input_data
+    elif isinstance(input_data, np.ndarray):
+        counts = pd.DataFrame(input_data)
     else:
         raise TypeError(f"Unrecognized input format: {type(input_data)}")
 
-    if 'counts' in locals():
-        sf = np.sum(counts, axis=0)
-        median_sf = np.median(sf)
-        norm = (counts / sf) * median_sf
-        return remove_undetected_genes(norm)
+    # 2. Handle log-transformation
+    if is_log:
+        # np.expm1 is the inverse of np.log1p
+        counts = np.expm1(counts)
     
-    raise ValueError("Could not process input data.")
+    # 3. Handle normalization for raw counts
+    if is_counts:
+        sf = counts.sum(axis=0) if hasattr(counts, 'sum') else np.sum(counts, axis=0)
+        sf[sf == 0] = 1 # Avoid division by zero
+        # Normalize to counts-per-million (CPM)
+        norm_counts = (counts / sf) * 1_000_000
+        return remove_undetected_genes(norm_counts)
+    
+    # 4. If data is already normalized (not raw counts), just filter
+    return remove_undetected_genes(counts)
 
 
 def NBumiConvertToInteger(mat):
@@ -399,11 +417,17 @@ def NBumiPearsonResiduals(counts, fits=None):
         from .utils import NBumiFitModel
         fits = NBumiFitModel(counts)
     
-    mus = np.outer(fits['vals']['tjs'] / fits['vals']['total'], fits['vals']['tis'])
-    sizes = fits['sizes'][:, np.newaxis] # Ensure sizes broadcasts correctly
+    # Convert pandas Series to numpy arrays to avoid FutureWarnings
+    tjs = np.array(fits['vals']['tjs']) if hasattr(fits['vals']['tjs'], 'values') else fits['vals']['tjs']
+    tis = np.array(fits['vals']['tis']) if hasattr(fits['vals']['tis'], 'values') else fits['vals']['tis']
+    sizes = np.array(fits['sizes']) if hasattr(fits['sizes'], 'values') else fits['sizes']
+    total = fits['vals']['total']
+    
+    mus = np.outer(tjs / total, tis)
+    sizes_broadcasted = sizes[:, np.newaxis]  # Now it's a numpy array, so this works
     
     # Variance of NB is mu + mu^2/size
-    variance = mus + (mus**2) / sizes
+    variance = mus + (mus**2) / sizes_broadcasted
     pearson = (counts - mus) / np.sqrt(variance)
     return pearson
 
