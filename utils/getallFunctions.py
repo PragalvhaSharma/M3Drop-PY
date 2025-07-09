@@ -20,3 +20,12 @@ def get_all_functions_in_folder(folder_path: str) -> Dict[str, List[str]]:
             except Exception as e:
                 functions_dict[filename] = [f"Error parsing file: {e}"]
     return functions_dict
+
+
+if __name__ == '__main__':
+    folder = ''
+    result = get_all_functions_in_folder(folder)
+    for file, funcs in result.items():
+        print(f"{file}:")
+        for func in funcs:
+            print(f"  - {func}")
