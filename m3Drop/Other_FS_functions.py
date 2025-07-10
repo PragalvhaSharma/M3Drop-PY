@@ -214,15 +214,26 @@ def gini_fs(expr_mat, suppress_plot=True):
         cumsum = np.cumsum(sorted_x)
         return (n + 1 - 2 * np.sum(cumsum) / cumsum[-1]) / n
     
+    # Store original gene names
+    original_gene_names = getattr(expr_mat, 'index', [f'gene_{i}' for i in range(expr_mat.shape[0])])
+    
     # Remove genes with zero expression
     if sparse.issparse(expr_mat):
         gene_sums = np.array(expr_mat.sum(axis=1)).flatten()
         non_zero_genes = gene_sums > 0
         expr_mat = expr_mat[non_zero_genes, :].toarray()
+        gene_names = [original_gene_names[i] for i in range(len(original_gene_names)) if non_zero_genes[i]]
     else:
         gene_sums = np.sum(expr_mat, axis=1)
         non_zero_genes = gene_sums > 0
-        expr_mat = expr_mat[non_zero_genes, :]
+        # Fix the boolean indexing - use proper DataFrame indexing
+        if isinstance(expr_mat, pd.DataFrame):
+            expr_mat_filtered = expr_mat.loc[non_zero_genes, :]
+            gene_names = expr_mat_filtered.index.tolist()
+            expr_mat = expr_mat_filtered.values  # Convert to numpy for row access
+        else:
+            expr_mat = expr_mat[non_zero_genes, :]
+            gene_names = [original_gene_names[i] for i in range(len(original_gene_names)) if non_zero_genes[i]]
     
     ginis = np.array([gini_coefficient(expr_mat[i, :]) for i in range(expr_mat.shape[0])])
     max_expr = np.log2(np.max(expr_mat, axis=1) + 1)
@@ -248,7 +259,6 @@ def gini_fs(expr_mat, suppress_plot=True):
     # Calculate p-values
     p = 1 - norm.cdf(norm_ginis, loc=np.mean(norm_ginis), scale=np.std(norm_ginis))
     
-    gene_names = getattr(expr_mat, 'index', [f'gene_{i}' for i in range(expr_mat.shape[0])])
     if len(gene_names) != len(p):
         gene_names = [f'gene_{i}' for i in range(len(p))]
     
@@ -258,8 +268,13 @@ def cor_fs(expr_mat, direction="both", fdr=None):
     """
     Correlation-based feature selection
     """
+    # Store original gene names
+    original_gene_names = getattr(expr_mat, 'index', [f'gene_{i}' for i in range(expr_mat.shape[0])])
+    
     if sparse.issparse(expr_mat):
         expr_mat = expr_mat.toarray()
+    elif isinstance(expr_mat, pd.DataFrame):
+        expr_mat = expr_mat.values  # Convert to numpy for row access
     
     # Calculate Spearman correlation matrix (like R version)
     from scipy.stats import spearmanr
@@ -307,13 +322,9 @@ def cor_fs(expr_mat, direction="both", fdr=None):
         # Filter by FDR threshold
         sig_genes = np.min(p_adj_mat, axis=1) < fdr
         score = score[sig_genes]
-        gene_names = getattr(expr_mat, 'index', [f'gene_{i}' for i in range(expr_mat.shape[0])])
-        if hasattr(expr_mat, 'index'):
-            gene_names = [gene_names[i] for i in range(len(gene_names)) if sig_genes[i]]
-        else:
-            gene_names = [f'gene_{i}' for i in range(len(score))]
+        gene_names = [original_gene_names[i] for i in range(len(original_gene_names)) if sig_genes[i]]
     else:
-        gene_names = getattr(expr_mat, 'index', [f'gene_{i}' for i in range(expr_mat.shape[0])])
+        gene_names = original_gene_names
     
     score_series = pd.Series(score, index=gene_names)
     return score_series.sort_values(ascending=False)
@@ -347,8 +358,13 @@ def Consensus_fs(counts, norm=None, is_spike=None, pcs=[2, 3], include_cors=True
             row_vars = np.sum(counts, axis=1)
     
     invariant = row_vars == 0
-    counts = counts[~invariant, :]
-    norm = norm[~invariant, :]
+    # Fix the boolean indexing - use proper DataFrame indexing
+    if isinstance(counts, pd.DataFrame):
+        counts = counts.loc[~invariant, :]
+        norm = norm.loc[~invariant, :]
+    else:
+        counts = counts[~invariant, :]
+        norm = norm[~invariant, :]
     
     # Apply feature selection methods
     try:
