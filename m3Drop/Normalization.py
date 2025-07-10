@@ -5,8 +5,8 @@ import matplotlib.pyplot as plt
 from scipy.sparse import issparse
 import warnings
 
-# Import NBumi functions
-from ..NB_UMI import NBumiFitModel, hidden_calc_vals
+# Import NBumi functions - handle both relative and absolute imports
+from .NB_UMI import NBumiFitModel, hidden_calc_vals
 
 # Normalization Functions
 
