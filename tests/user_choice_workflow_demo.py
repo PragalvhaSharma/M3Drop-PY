@@ -203,12 +203,17 @@ def normalization_only(adata):
     try:
         adata_pearson = adata.copy()
         
-        # Convert to DataFrame format for NBumi
+        # Convert to DataFrame format for NBumi (genes x cells)
+        if hasattr(adata_pearson.X, 'toarray'):
+            data_matrix = adata_pearson.X.toarray()
+        else:
+            data_matrix = adata_pearson.X
+            
         counts_df = pd.DataFrame(
-            adata_pearson.X.toarray() if hasattr(adata_pearson.X, 'toarray') else adata_pearson.X,
+            data_matrix.T,  # Transpose to genes x cells for M3Drop
             index=adata_pearson.var_names,
             columns=adata_pearson.obs_names
-        ).T  # Transpose to genes x cells for M3Drop
+        )
         
         # Fit NBumi model with error handling
         print("   🔄 Fitting NBumi model...")
@@ -338,7 +343,8 @@ def both_normalization_and_feature_selection(adata):
     print("\n1️⃣ Scanpy Highly Variable Genes...")
     try:
         adata_hvg = adata_norm.copy()
-        sc.pp.highly_variable_genes(adata_hvg, n_top_genes=2000, flavor='seurat_v3')
+        # Use 'seurat' flavor instead of 'seurat_v3' to avoid scikit-misc dependency
+        sc.pp.highly_variable_genes(adata_hvg, n_top_genes=2000, flavor='seurat')
         hvg_scanpy = adata_hvg.var['highly_variable'].sum()
         results['scanpy_hvg'] = {'adata': adata_hvg, 'n_genes': hvg_scanpy}
         print(f"   ✅ Found {hvg_scanpy} highly variable genes")
@@ -347,7 +353,39 @@ def both_normalization_and_feature_selection(adata):
             print(f"   📝 Top HVGs: {list(hvg_names)}")
     except Exception as e:
         print(f"   ❌ Scanpy HVG failed: {e}")
-        results['scanpy_hvg'] = {'adata': None, 'n_genes': 0}
+        print("   💡 Trying alternative method without external dependencies...")
+        try:
+            # Fallback: use simple coefficient of variation method
+            adata_hvg = adata_norm.copy()
+            
+            if hasattr(adata_hvg.X, 'toarray'):
+                norm_data = adata_hvg.X.toarray()
+            else:
+                norm_data = adata_hvg.X
+            
+            # Calculate mean and variance per gene
+            gene_means = np.mean(norm_data, axis=0)
+            gene_vars = np.var(norm_data, axis=0)
+            
+            # Calculate normalized dispersion (similar to Seurat)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                dispersions = gene_vars / gene_means
+                dispersions[gene_means == 0] = 0
+            
+            # Select top 2000 genes by dispersion
+            top_indices = np.argsort(dispersions)[-2000:]
+            adata_hvg.var['highly_variable'] = False
+            adata_hvg.var.iloc[top_indices, adata_hvg.var.columns.get_loc('highly_variable')] = True
+            
+            hvg_scanpy = adata_hvg.var['highly_variable'].sum()
+            results['scanpy_hvg'] = {'adata': adata_hvg, 'n_genes': hvg_scanpy}
+            print(f"   ✅ Found {hvg_scanpy} highly variable genes (fallback method)")
+            if hvg_scanpy > 0:
+                hvg_names = adata_hvg.var_names[adata_hvg.var['highly_variable']][:5]
+                print(f"   📝 Top HVGs: {list(hvg_names)}")
+        except Exception as e2:
+            print(f"   ❌ Fallback method also failed: {e2}")
+            results['scanpy_hvg'] = {'adata': None, 'n_genes': 0}
     
     # Method 2: M3Drop on log-normalized data (if possible)
     print("\n2️⃣ M3Drop Feature Selection (adapted for log-normalized data)...")
