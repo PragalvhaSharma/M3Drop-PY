@@ -280,7 +280,7 @@ def demo_user_choice_workflow(data_path=None, user_choice='both', use_subset=Tru
     # Load data
     if data_path is None:
         # Use the specific GSM8267529 dataset
-        data_path = "/Users/pragalvhasharma/Downloads/PragGOToDocuments/Blanc/school/mcpServers/newM3dUpdate/m3DropNew/data/GSM8267529_G-P28_raw_matrix.h5ad"
+        data_path = " data/GSM8267529_G-P28_raw_matrix.h5ad"
         print(f"📁 Loading GSM8267529_G-P28_raw_matrix dataset...")
         adata = sc.read_h5ad(data_path)
         print(f"✅ Loaded GSM8267529 dataset: {adata.n_obs} cells × {adata.n_vars} genes")
@@ -336,7 +336,7 @@ def compare_all_approaches(data_path=None, use_subset=True, subset_size=(2000, 5
     # Load data
     if data_path is None:
         # Use the specific GSM8267529 dataset
-        data_path = "/Users/pragalvhasharma/Downloads/PragGOToDocuments/Blanc/school/mcpServers/newM3dUpdate/m3DropNew/data/GSM8267529_G-P28_raw_matrix.h5ad"
+        data_path = " data/GSM8267529_G-P28_raw_matrix.h5ad"
         adata = sc.read_h5ad(data_path)
     else:
         adata = sc.read_h5ad(data_path)

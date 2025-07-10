@@ -8,7 +8,7 @@ import numpy as np
 from m3Drop.basics import M3DropConvertData
 
 # Step 1: Load your AnnData (.h5ad) file
-h5ad_file = "/Users/pragalvhasharma/Downloads/PragGOToDocuments/Blanc/school/mcpServers/newM3dUpdate/m3DropNew/data/GSM8267529_G-P28_raw_matrix.h5ad"
+h5ad_file = "data/GSM8267529_G-P28_raw_matrix.h5ad"
 adata = sc.read_h5ad(h5ad_file)
 print("AnnData object loaded successfully:")
 print(adata)
