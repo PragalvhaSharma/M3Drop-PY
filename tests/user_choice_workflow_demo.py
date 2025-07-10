@@ -31,10 +31,8 @@ from typing import Literal, Optional
 
 # Import M3Drop functions
 from m3Drop.Extremes import M3DropFeatureSelection
-from m3Drop.NB_UMI import NBumiFitModel, NBumiImputeNorm
-from m3Drop.Normalization import NBumiPearsonResiduals, NBumiPearsonResidualsApprox, M3DropCleanData
-from m3Drop.scanpy import nbumi_normalize, m3drop_highly_variable_genes
-from m3Drop.Other_FS_functions import Consensus_fs
+from m3Drop.NB_UMI import NBumiFitModel
+from m3Drop.Normalization import NBumiPearsonResiduals
 from m3Drop.DANB_HVG import NBumiHVG
 
 
