@@ -55,7 +55,7 @@ from m3Drop.M3D_Imputation import another_function
 
 ```python
 from m3Drop.basics import M3DropConvertData, M3DropFeatureSelection
-from m3Drop.NBumi import NBumiFitModel, NBumiFeatureSelectionCombinedDrop, NBumiPearsonResiduals
+from m3Drop.NB_UMI import NBumiFitModel, NBumiFeatureSelectionCombinedDrop, NBumiPearsonResiduals
 
 # Load your single-cell expression data
 # counts should be a genes x cells matrix
