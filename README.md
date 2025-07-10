@@ -42,6 +42,15 @@ You can install M3DropPy using pip:
 pip install m3drop
 ```
 
+## Imports
+
+You can import specific functions from different modules:
+
+```python
+from m3Drop.basics import your_function_name
+from m3Drop.M3D_Imputation import another_function
+```
+
 ## Usage
 
 ```python
