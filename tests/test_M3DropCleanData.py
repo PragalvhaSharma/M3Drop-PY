@@ -3,7 +3,6 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import scanpy as sc
-import pandas as pd
 from m3Drop.Normalization import M3DropCleanData
 import numpy as np
 
