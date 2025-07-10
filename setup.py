@@ -5,15 +5,15 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name="M3Drop",
-    version="0.1.2",
+    version="0.1.3",
     author="Tallulah Andrews, Pragalvha Sharma",
     author_email="tandrew6@uwo.ca, pragalvhasharma@gmail.com",
     description="A Python implementation of the M3Drop single-cell RNA-seq analysis tool.",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="[Your Project URL]",
+    url="https://github.com/PragalvhaSharma/m3DropNew",
     license="MIT",
-    packages=setuptools.find_packages(),
+    packages=setuptools.find_packages(include=["m3Drop", "m3Drop.*"]),
     classifiers=[
         "Programming Language :: Python :: 3",
         "Operating System :: OS Independent",
