@@ -54,27 +54,28 @@ from m3Drop.M3D_Imputation import another_function
 ## Usage
 
 ```python
-import m3d
+from m3Drop.basics import M3DropConvertData, M3DropFeatureSelection
+from m3Drop.NBumi import NBumiFitModel, NBumiFeatureSelectionCombinedDrop, NBumiPearsonResiduals
 
 # Load your single-cell expression data
 # counts should be a genes x cells matrix
 
 # For non-UMI data (Smart-seq2, etc.)
 # Convert and normalize data
-norm_data = m3d.M3DropConvertData(counts, is_counts=True)
+norm_data = M3DropConvertData(counts, is_counts=True)
 
 # Perform M3Drop feature selection
-selected_genes = m3d.M3DropFeatureSelection(norm_data, mt_method="fdr", mt_threshold=0.01)
+selected_genes = M3DropFeatureSelection(norm_data, mt_method="fdr", mt_threshold=0.01)
 
 # For UMI data (10X Chromium, etc.)
 # Fit DANB model
-danb_fit = m3d.NBumiFitModel(counts)
+danb_fit = NBumiFitModel(counts)
 
 # Perform dropout-based feature selection
-selected_genes = m3d.NBumiFeatureSelectionCombinedDrop(danb_fit, method="fdr", qval_thres=0.01)
+selected_genes = NBumiFeatureSelectionCombinedDrop(danb_fit, method="fdr", qval_thres=0.01)
 
 # Calculate Pearson residuals for normalization
-pearson_residuals = m3d.NBumiPearsonResiduals(counts, danb_fit)
+pearson_residuals = NBumiPearsonResiduals(counts, danb_fit)
 ```
 
 ## When to Use Each Method
