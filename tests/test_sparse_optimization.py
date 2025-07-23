@@ -14,9 +14,8 @@ import scanpy as sc
 from memory_profiler import profile
 import psutil
 import gc
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Add the M3Drop package to the path
-sys.path.insert(0, os.path.abspath('.'))
 
 from m3Drop.basics import M3DropConvertData
 from m3Drop.NB_UMI import NBumiConvertData
