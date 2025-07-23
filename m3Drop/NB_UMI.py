@@ -462,19 +462,36 @@ def NBumiImputeNorm(counts, fit, total_counts_per_cell=None):
     else:
         return norm
 
-def NBumiConvertData(input_data, is_log=False, is_counts=False, pseudocount=1):
+def NBumiConvertData(input_data, is_log=False, is_counts=False, pseudocount=1, preserve_sparse=True):
     """Convert various input formats to counts matrix."""
+    
+    # Store gene and cell names for later use
+    gene_names = None
+    cell_names = None
     
     # Handle different input types
     if hasattr(input_data, 'X'):  # AnnData object
+        # AnnData stores data as cells x genes, we need genes x cells for M3Drop
+        # So var_names are the genes, obs_names are the cells
+        gene_names = input_data.var_names.copy()  # These are the actual gene names
+        cell_names = input_data.obs_names.copy()  # These are the actual cell names
+        
         if is_log:
-            lognorm = input_data.X.toarray() if sp.issparse(input_data.X) else input_data.X
-            # Create DataFrame with gene and cell names
-            lognorm = pd.DataFrame(lognorm.T, index=input_data.var_names, columns=input_data.obs_names)
+            if sp.issparse(input_data.X) and preserve_sparse:
+                # Keep sparse, transpose to genes x cells
+                lognorm = input_data.X.T.tocsr()
+            else:
+                lognorm = input_data.X.toarray() if sp.issparse(input_data.X) else input_data.X
+                # Create DataFrame with gene and cell names (transpose: cells x genes -> genes x cells)
+                lognorm = pd.DataFrame(lognorm.T, index=input_data.var_names, columns=input_data.obs_names)
         else:
-            counts = input_data.X.toarray() if sp.issparse(input_data.X) else input_data.X
-            # Create DataFrame with gene and cell names
-            counts = pd.DataFrame(counts.T, index=input_data.var_names, columns=input_data.obs_names)
+            if sp.issparse(input_data.X) and preserve_sparse:
+                # Keep sparse, transpose to genes x cells  
+                counts = input_data.X.T.tocsr()
+            else:
+                counts = input_data.X.toarray() if sp.issparse(input_data.X) else input_data.X
+                # Create DataFrame with gene and cell names (transpose: cells x genes -> genes x cells)
+                counts = pd.DataFrame(counts.T, index=input_data.var_names, columns=input_data.obs_names)
     elif isinstance(input_data, pd.DataFrame):
         if is_log:
             lognorm = input_data.copy()
@@ -483,48 +500,135 @@ def NBumiConvertData(input_data, is_log=False, is_counts=False, pseudocount=1):
         else:
             norm = input_data.copy()
     elif isinstance(input_data, np.ndarray):
-        # Create DataFrame with generic gene names
-        gene_names = [f"Gene_{i}" for i in range(input_data.shape[0])]
-        cell_names = [f"Cell_{i}" for i in range(input_data.shape[1])]
-        if is_log:
-            lognorm = pd.DataFrame(input_data, index=gene_names, columns=cell_names)
-        elif is_counts:
-            counts = pd.DataFrame(input_data, index=gene_names, columns=cell_names)
+        # Create gene and cell names
+        gene_names = np.array([f"Gene_{i}" for i in range(input_data.shape[0])])
+        cell_names = np.array([f"Cell_{i}" for i in range(input_data.shape[1])])
+        
+        if preserve_sparse:
+            # Convert to sparse for memory efficiency
+            if is_log:
+                lognorm = sp.csr_matrix(input_data)
+            elif is_counts:
+                counts = sp.csr_matrix(input_data)
+            else:
+                norm = sp.csr_matrix(input_data)
         else:
-            norm = pd.DataFrame(input_data, index=gene_names, columns=cell_names)
+            if is_log:
+                lognorm = pd.DataFrame(input_data, index=gene_names, columns=cell_names)
+            elif is_counts:
+                counts = pd.DataFrame(input_data, index=gene_names, columns=cell_names)
+            else:
+                norm = pd.DataFrame(input_data, index=gene_names, columns=cell_names)
+    elif sp.issparse(input_data):
+        if preserve_sparse:
+            if is_log:
+                lognorm = input_data.tocsr()
+            elif is_counts:
+                counts = input_data.tocsr()
+            else:
+                norm = input_data.tocsr()
+        else:
+            # Convert to DataFrame 
+            if is_log:
+                lognorm = pd.DataFrame(input_data.toarray())
+            elif is_counts:
+                counts = pd.DataFrame(input_data.toarray())
+            else:
+                norm = pd.DataFrame(input_data.toarray())
     else:
         raise ValueError(f"Error: Unrecognized input format: {type(input_data)}")
     
-    def remove_undetected_genes(mat):
+    def remove_undetected_genes(mat, genes=None, cells=None):
         """Remove genes with no detected expression."""
-        if isinstance(mat, pd.DataFrame):
+        if sp.issparse(mat):
+            # Efficient sparse operations
+            detected = np.array(mat.sum(axis=1)).flatten() > 0
+            filtered = mat[detected, :]
+            if not detected.all():
+                print(f"Removing {(~detected).sum()} undetected genes.")
+            if genes is not None:
+                genes = genes[detected]
+            return filtered, genes
+        elif isinstance(mat, pd.DataFrame):
             detected = mat.sum(axis=1) > 0
             filtered = mat[detected]
             if not detected.all():
                 print(f"Removing {(~detected).sum()} undetected genes.")
-            return filtered
+            return filtered, None
         else:
             # Fallback for numpy arrays
-            no_detect = np.sum(mat > 0, axis=1) == 0
-            print(f"Removing {np.sum(no_detect)} undetected genes.")
-            return mat[~no_detect, :]
+            detected = np.sum(mat > 0, axis=1) > 0
+            print(f"Removing {(~detected).sum()} undetected genes.")
+            filtered = mat[detected, :]
+            if genes is not None:
+                genes = genes[detected]
+            return filtered, genes
     
     # Prefer raw counts to lognorm
     if 'counts' in locals():
-        counts = np.ceil(counts)
-        counts = remove_undetected_genes(counts)
-        return counts.astype(int)
+        if sp.issparse(counts):
+            # Handle sparse integer conversion
+            counts = counts.copy()
+            counts.data = np.ceil(counts.data)
+            filtered_counts, filtered_genes = remove_undetected_genes(counts, gene_names, cell_names)
+            filtered_counts.data = filtered_counts.data.astype(int)
+            
+            if preserve_sparse:
+                # Import SparseMat3Drop from basics module
+                from .basics import SparseMat3Drop
+                return SparseMat3Drop(filtered_counts, gene_names=filtered_genes, cell_names=cell_names)
+            else:
+                # Convert to DataFrame for compatibility
+                if filtered_genes is not None and cell_names is not None:
+                    return pd.DataFrame(filtered_counts.toarray(), 
+                                      index=filtered_genes, 
+                                      columns=cell_names)
+                else:
+                    return pd.DataFrame(filtered_counts.toarray())
+        else:
+            counts = np.ceil(counts)
+            filtered_counts, _ = remove_undetected_genes(counts)
+            return filtered_counts.astype(int)
     
     # If normalized, rescale
     if 'lognorm' in locals():
-        norm = 2**lognorm - pseudocount
+        if sp.issparse(lognorm):
+            # Handle sparse log transformation
+            norm = lognorm.copy()
+            norm.data = 2**norm.data - pseudocount
+        else:
+            norm = 2**lognorm - pseudocount
     
     if 'norm' in locals():
-        sf = norm.min(axis=0)
-        sf[sf == 0] = 1  # Avoid division by zero
-        sf = 1 / sf
-        counts = (norm.multiply(sf, axis=1) if isinstance(norm, pd.DataFrame) else norm * sf[np.newaxis, :])
-        counts = np.ceil(counts)
-        counts = remove_undetected_genes(counts)
-        return counts.astype(int)
+        if sp.issparse(norm):
+            # Sparse matrix operations for scaling
+            sf = np.array(norm.min(axis=0)).flatten()
+            sf[sf == 0] = 1  # Avoid division by zero
+            sf = 1 / sf
+            # Create diagonal matrix for efficient scaling
+            sf_diag = sp.diags(sf, format='csr')
+            counts = norm @ sf_diag
+            counts.data = np.ceil(counts.data)
+            
+            filtered_counts, filtered_genes = remove_undetected_genes(counts, gene_names, cell_names)
+            filtered_counts.data = filtered_counts.data.astype(int)
+            
+            if preserve_sparse:
+                from .basics import SparseMat3Drop
+                return SparseMat3Drop(filtered_counts, gene_names=filtered_genes, cell_names=cell_names)
+            else:
+                if filtered_genes is not None and cell_names is not None:
+                    return pd.DataFrame(filtered_counts.toarray(), 
+                                      index=filtered_genes, 
+                                      columns=cell_names)
+                else:
+                    return pd.DataFrame(filtered_counts.toarray())
+        else:
+            sf = norm.min(axis=0)
+            sf[sf == 0] = 1  # Avoid division by zero
+            sf = 1 / sf
+            counts = (norm.multiply(sf, axis=1) if isinstance(norm, pd.DataFrame) else norm * sf[np.newaxis, :])
+            counts = np.ceil(counts)
+            filtered_counts, _ = remove_undetected_genes(counts)
+            return filtered_counts.astype(int)
 

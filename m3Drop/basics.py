@@ -1,9 +1,10 @@
 import numpy as np
 import pandas as pd
 from anndata import AnnData
+import scipy.sparse as sp
 
 
-def M3DropConvertData(input_data, is_log=False, is_counts=False, pseudocount=1):
+def M3DropConvertData(input_data, is_log=False, is_counts=False, pseudocount=1, preserve_sparse=True):
     """
     Converts various data formats to a normalized, non-log-transformed matrix.
 
@@ -20,71 +21,214 @@ def M3DropConvertData(input_data, is_log=False, is_counts=False, pseudocount=1):
         Whether the data is raw, unnormalized counts.
     pseudocount : float, default=1
         Pseudocount added before log-transformation.
+    preserve_sparse : bool, default=True
+        Whether to preserve sparse matrix format for memory efficiency.
 
     Returns
     -------
-    pd.DataFrame
-        A normalized, non-log-transformed matrix.
+    pd.DataFrame or scipy.sparse matrix
+        A normalized, non-log-transformed matrix. Returns sparse matrix if 
+        preserve_sparse=True and input is sparse, otherwise DataFrame.
     """
-    def remove_undetected_genes(mat):
-        # Helper to filter out genes with no expression across all cells
-        if not isinstance(mat, pd.DataFrame):
-             raise TypeError("remove_undetected_genes expects a pandas DataFrame.")
-        detected = mat.sum(axis=1) > 0
-        if np.sum(~detected) > 0:
-            print(f"Removing {np.sum(~detected)} undetected genes.")
-        return mat[detected]
+    def remove_undetected_genes(mat, gene_names=None, cell_names=None):
+        """Helper to filter out genes with no expression across all cells"""
+        if sp.issparse(mat):
+            # For sparse matrices, use efficient sparse operations
+            detected = np.array(mat.sum(axis=1)).flatten() > 0
+            if np.sum(~detected) > 0:
+                print(f"Removing {np.sum(~detected)} undetected genes.")
+            filtered_mat = mat[detected, :]
+            if gene_names is not None:
+                gene_names = gene_names[detected]
+            return filtered_mat, gene_names
+        elif isinstance(mat, pd.DataFrame):
+            detected = mat.sum(axis=1) > 0
+            if np.sum(~detected) > 0:
+                print(f"Removing {np.sum(~detected)} undetected genes.")
+            return mat[detected], None
+        else:
+            # numpy array
+            detected = np.sum(mat, axis=1) > 0
+            if np.sum(~detected) > 0:
+                print(f"Removing {np.sum(~detected)} undetected genes.")
+            filtered_mat = mat[detected, :]
+            if gene_names is not None:
+                gene_names = gene_names[detected]
+            return filtered_mat, gene_names
 
     from scipy.sparse import issparse
     
-    # 1. Handle Input Type and convert to a pandas DataFrame `counts`
+    # Store gene and cell names for later use
+    gene_names = None
+    cell_names = None
+    
+    # 1. Handle Input Type and convert to appropriate format
     if isinstance(input_data, AnnData):
-        if issparse(input_data.X):
-            counts = pd.DataFrame(input_data.X.toarray(), index=input_data.obs_names, columns=input_data.var_names)
+        # AnnData stores data as cells x genes, we need genes x cells for M3Drop
+        # So var_names are the genes, obs_names are the cells
+        gene_names = input_data.var_names.copy()  # These are the actual gene names
+        cell_names = input_data.obs_names.copy()  # These are the actual cell names
+        
+        if issparse(input_data.X) and preserve_sparse:
+            # Keep as sparse matrix but note that AnnData is cells x genes, we need genes x cells
+            counts = input_data.X.T.tocsr()  # Transpose to genes x cells
         else:
-            counts = pd.DataFrame(input_data.X, index=input_data.obs_names, columns=input_data.var_names)
+            # Convert to DataFrame as before
+            if issparse(input_data.X):
+                # AnnData: cells x genes -> transpose to genes x cells for DataFrame
+                counts = pd.DataFrame(input_data.X.toarray().T, index=input_data.var_names, columns=input_data.obs_names)
+            else:
+                counts = pd.DataFrame(input_data.X.T, index=input_data.var_names, columns=input_data.obs_names)
     elif isinstance(input_data, pd.DataFrame):
         counts = input_data
     elif isinstance(input_data, np.ndarray):
-        counts = pd.DataFrame(input_data)
+        if preserve_sparse:
+            # Convert to sparse for memory efficiency
+            counts = sp.csr_matrix(input_data)
+            gene_names = np.array([f"Gene_{i}" for i in range(input_data.shape[0])])
+            cell_names = np.array([f"Cell_{i}" for i in range(input_data.shape[1])])
+        else:
+            counts = pd.DataFrame(input_data)
+    elif issparse(input_data):
+        if preserve_sparse:
+            counts = input_data.tocsr()  # Ensure CSR format
+        else:
+            counts = pd.DataFrame(input_data.toarray())
     else:
         raise TypeError(f"Unrecognized input format: {type(input_data)}")
 
-    # 2. Handle log-transformation (corrected to match R implementation)
+    # 2. Handle log-transformation
     if is_log:
-        # R uses 2^lognorm-pseudocount, equivalent to expm1 for log1p transformed data
-        counts = 2**counts - pseudocount
+        if issparse(counts):
+            # Handle sparse log transformation
+            counts = counts.copy()
+            counts.data = 2**counts.data - pseudocount
+        elif isinstance(counts, pd.DataFrame):
+            counts = 2**counts - pseudocount
+        else:
+            counts = 2**counts - pseudocount
     
-    # 3. Handle normalization for raw counts (corrected to match R implementation)
+    # 3. Handle normalization for raw counts
     if is_counts:
-        sf = counts.sum(axis=0)
-        sf[sf == 0] = 1 # Avoid division by zero
-        # Normalize to CPM (counts per million)
-        norm_counts = (counts / sf) * 1e6
-        return remove_undetected_genes(norm_counts)
+        if issparse(counts):
+            # Efficient sparse normalization
+            sf = np.array(counts.sum(axis=0)).flatten()
+            sf[sf == 0] = 1  # Avoid division by zero
+            # Normalize to CPM (counts per million) - sparse matrix operations
+            sf_cpm = 1e6 / sf
+            # Create diagonal matrix for efficient multiplication
+            sf_diag = sp.diags(sf_cpm, format='csr')
+            norm_counts = counts @ sf_diag
+            
+            # Filter undetected genes
+            filtered_counts, filtered_gene_names = remove_undetected_genes(norm_counts, gene_names, cell_names)
+            
+            if preserve_sparse:
+                # Return sparse matrix with metadata if possible
+                return SparseMat3Drop(filtered_counts, gene_names=filtered_gene_names, cell_names=cell_names)
+            else:
+                # Convert to DataFrame for compatibility
+                if gene_names is not None and cell_names is not None:
+                    filtered_gene_names = gene_names if filtered_gene_names is None else filtered_gene_names
+                    return pd.DataFrame(filtered_counts.toarray(), 
+                                      index=filtered_gene_names, 
+                                      columns=cell_names)
+                else:
+                    return pd.DataFrame(filtered_counts.toarray())
+        else:
+            # DataFrame/array normalization as before
+            sf = counts.sum(axis=0)
+            sf[sf == 0] = 1  # Avoid division by zero
+            norm_counts = (counts / sf) * 1e6
+            filtered_result, _ = remove_undetected_genes(norm_counts)
+            return filtered_result
     
     # 4. If data is already normalized (not raw counts), just filter
-    return remove_undetected_genes(counts)
+    filtered_result, filtered_gene_names = remove_undetected_genes(counts, gene_names, cell_names)
+    
+    if preserve_sparse and issparse(filtered_result):
+        return SparseMat3Drop(filtered_result, gene_names=filtered_gene_names, cell_names=cell_names)
+    else:
+        return filtered_result
+
+
+class SparseMat3Drop:
+    """
+    Wrapper class for sparse matrices with gene/cell name metadata.
+    Maintains memory efficiency while preserving essential metadata.
+    """
+    def __init__(self, matrix, gene_names=None, cell_names=None):
+        self.matrix = matrix
+        self.gene_names = gene_names
+        self.cell_names = cell_names
+        self.shape = matrix.shape
+    
+    def __getattr__(self, name):
+        # Delegate to the underlying sparse matrix
+        return getattr(self.matrix, name)
+    
+    def toarray(self):
+        """Convert to dense array"""
+        return self.matrix.toarray()
+    
+    def to_dataframe(self):
+        """Convert to pandas DataFrame with proper indices"""
+        if self.gene_names is not None and self.cell_names is not None:
+            return pd.DataFrame(self.matrix.toarray(), 
+                              index=self.gene_names, 
+                              columns=self.cell_names)
+        else:
+            return pd.DataFrame(self.matrix.toarray())
+    
+    def sum(self, axis=None):
+        """Sum operation maintaining sparse efficiency"""
+        return self.matrix.sum(axis=axis)
+    
+    def mean(self, axis=None):
+        """Mean operation maintaining sparse efficiency"""
+        return self.matrix.mean(axis=axis)
 
 
 def bg__calc_variables(expr_mat):
     """
     Calculates a suite of gene-specific variables including: mean, dropout rate,
-    and their standard errors. Updated to match R implementation behavior.
+    and their standard errors. Updated to match R implementation behavior and 
+    handle sparse matrices efficiently.
     """
-    if isinstance(expr_mat, pd.DataFrame):
+    # Handle different input types
+    if hasattr(expr_mat, 'matrix') and hasattr(expr_mat, 'gene_names'):
+        # SparseMat3Drop object
+        expr_mat_values = expr_mat.matrix
+        gene_names = expr_mat.gene_names if expr_mat.gene_names is not None else pd.RangeIndex(start=0, stop=expr_mat.shape[0], step=1)
+        is_sparse = True
+    elif isinstance(expr_mat, pd.DataFrame):
         expr_mat_values = expr_mat.values
         gene_names = expr_mat.index
+        is_sparse = False
+    elif sp.issparse(expr_mat):
+        expr_mat_values = expr_mat
+        gene_names = pd.RangeIndex(start=0, stop=expr_mat.shape[0], step=1)
+        is_sparse = True
     else:
         expr_mat_values = expr_mat
         gene_names = pd.RangeIndex(start=0, stop=expr_mat.shape[0], step=1)
+        is_sparse = False
 
     # Check for NA values
-    if np.sum(np.isnan(expr_mat_values)) > 0:
-        raise ValueError("Error: Expression matrix contains NA values.")
+    if is_sparse:
+        # For sparse matrices, only check non-zero values
+        if np.sum(np.isnan(expr_mat_values.data)) > 0:
+            raise ValueError("Error: Expression matrix contains NA values")
+    else:
+        if np.sum(np.isnan(expr_mat_values)) > 0:
+            raise ValueError("Error: Expression matrix contains NA values")
     
     # Check for negative values
-    lowest = np.min(expr_mat_values)
+    if is_sparse:
+        lowest = np.min(expr_mat_values.data) if expr_mat_values.nnz > 0 else 0
+    else:
+        lowest = np.min(expr_mat_values)
+        
     if lowest < 0:
         raise ValueError("Error: Expression matrix cannot contain negative values! Has the matrix been log-transformed?")
     
@@ -92,25 +236,47 @@ def bg__calc_variables(expr_mat):
     if lowest > 0:
         print("Warning: No zero values (dropouts) detected will use minimum expression value instead.")
         min_val = lowest + 0.05
-        expr_mat_values[expr_mat_values == min_val] = 0
+        if is_sparse:
+            # For sparse matrices, we need to handle this differently
+            expr_mat_values.data[expr_mat_values.data == min_val] = 0
+            expr_mat_values.eliminate_zeros()
+        else:
+            expr_mat_values[expr_mat_values == min_val] = 0
     
-    # Check if we have enough zeros
-    sum_zero = np.prod(expr_mat_values.shape) - np.sum(expr_mat_values > 0)
-    if sum_zero < 0.1 * np.prod(expr_mat_values.shape):
+    # Check if we have enough zeros (efficient for sparse matrices)
+    if is_sparse:
+        total_elements = expr_mat_values.shape[0] * expr_mat_values.shape[1]
+        non_zero_elements = expr_mat_values.nnz
+        sum_zero = total_elements - non_zero_elements
+    else:
+        sum_zero = np.prod(expr_mat_values.shape) - np.sum(expr_mat_values > 0)
+    
+    total_elements = np.prod(expr_mat_values.shape)
+    if sum_zero < 0.1 * total_elements:
         print("Warning: Expression matrix contains few zero values (dropouts) this may lead to poor performance.")
 
-    # Remove undetected genes
-    p = 1 - np.sum(expr_mat_values > 0, axis=1) / expr_mat_values.shape[1]
+    # Calculate dropout rate efficiently
+    if is_sparse:
+        # For sparse matrices, count non-zeros per row
+        non_zero_per_gene = np.array((expr_mat_values > 0).sum(axis=1)).flatten()
+    else:
+        non_zero_per_gene = np.sum(expr_mat_values > 0, axis=1)
     
+    p = 1 - non_zero_per_gene / expr_mat_values.shape[1]
+    
+    # Remove undetected genes
     if np.sum(p == 1) > 0:
         print(f"Warning: Removing {np.sum(p == 1)} undetected genes.")
         detected = p < 1
-        expr_mat_values = expr_mat_values[detected, :]
+        if is_sparse:
+            expr_mat_values = expr_mat_values[detected, :]
+        else:
+            expr_mat_values = expr_mat_values[detected, :]
         if isinstance(gene_names, pd.Index):
             gene_names = gene_names[detected]
         else:
-            gene_names = np.arange(expr_mat_values.shape[0])
-        p = 1 - np.sum(expr_mat_values > 0, axis=1) / expr_mat_values.shape[1]
+            gene_names = gene_names[detected] if hasattr(gene_names, '__getitem__') else np.arange(expr_mat_values.shape[0])
+        p = 1 - non_zero_per_gene[detected] / expr_mat_values.shape[1]
 
     if expr_mat_values.shape[0] == 0:
         return {
@@ -120,10 +286,16 @@ def bg__calc_variables(expr_mat):
             'p_stderr': pd.Series(dtype=float)
         }
 
-    s = np.mean(expr_mat_values, axis=1)
+    # Calculate mean expression efficiently
+    if is_sparse:
+        s = np.array(expr_mat_values.mean(axis=1)).flatten()
+        # Calculate variance for sparse matrices
+        mean_sq = np.array((expr_mat_values.multiply(expr_mat_values)).mean(axis=1)).flatten()
+        s_stderr = np.sqrt((mean_sq - s**2) / expr_mat_values.shape[1])
+    else:
+        s = np.mean(expr_mat_values, axis=1)
+        s_stderr = np.sqrt((np.mean(expr_mat_values**2, axis=1) - s**2) / expr_mat_values.shape[1])
     
-    # Calculate standard error using sparse matrix friendly method
-    s_stderr = np.sqrt((np.mean(expr_mat_values**2, axis=1) - s**2) / expr_mat_values.shape[1])
     p_stderr = np.sqrt(p * (1 - p) / expr_mat_values.shape[1])
 
     return {
