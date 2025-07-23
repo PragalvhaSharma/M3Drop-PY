@@ -430,21 +430,37 @@ def NBumiImputeNorm(counts, fit, total_counts_per_cell=None):
     if total_counts_per_cell is None:
         total_counts_per_cell = np.median(fit['vals']['tis'])
     
+    # Preserve gene/cell names if input is DataFrame
+    if isinstance(counts, pd.DataFrame):
+        gene_names = counts.index
+        cell_names = counts.columns
+        counts_array = counts.values
+    else:
+        gene_names = None
+        cell_names = None
+        counts_array = counts
+    
     coeffs = NBumiFitDispVsMean(fit, suppress_plot=True)
     vals = fit['vals']
-    norm = np.copy(counts)
+    norm = np.copy(counts_array)
     normed_ti = total_counts_per_cell
     normed_mus = vals['tjs'] / vals['total']
     
-    for i in range(counts.shape[0]):
+    from scipy.stats import nbinom
+    
+    for i in range(counts_array.shape[0]):
         mu_is = vals['tjs'][i] * vals['tis'] / vals['total']
-        p_orig = nbinom.cdf(counts[i, :], n=fit['sizes'][i], p=fit['sizes'][i]/(fit['sizes'][i] + mu_is))
+        p_orig = nbinom.cdf(counts_array[i, :], n=fit['sizes'][i], p=fit['sizes'][i]/(fit['sizes'][i] + mu_is))
         
         new_size = hidden_shift_size(np.mean(mu_is), fit['sizes'][i], normed_mus[i] * normed_ti, coeffs)
         normed = nbinom.ppf(p_orig, n=new_size, p=new_size/(new_size + normed_mus[i] * normed_ti))
         norm[i, :] = normed
     
-    return norm
+    # Return as DataFrame if input was DataFrame
+    if gene_names is not None and cell_names is not None:
+        return pd.DataFrame(norm, index=gene_names, columns=cell_names)
+    else:
+        return norm
 
 def NBumiConvertData(input_data, is_log=False, is_counts=False, pseudocount=1):
     """Convert various input formats to counts matrix."""
@@ -453,23 +469,45 @@ def NBumiConvertData(input_data, is_log=False, is_counts=False, pseudocount=1):
     if hasattr(input_data, 'X'):  # AnnData object
         if is_log:
             lognorm = input_data.X.toarray() if sp.issparse(input_data.X) else input_data.X
+            # Create DataFrame with gene and cell names
+            lognorm = pd.DataFrame(lognorm.T, index=input_data.var_names, columns=input_data.obs_names)
         else:
             counts = input_data.X.toarray() if sp.issparse(input_data.X) else input_data.X
-    elif isinstance(input_data, (pd.DataFrame, np.ndarray)):
+            # Create DataFrame with gene and cell names
+            counts = pd.DataFrame(counts.T, index=input_data.var_names, columns=input_data.obs_names)
+    elif isinstance(input_data, pd.DataFrame):
         if is_log:
-            lognorm = input_data.values if isinstance(input_data, pd.DataFrame) else input_data
+            lognorm = input_data.copy()
         elif is_counts:
-            counts = input_data.values if isinstance(input_data, pd.DataFrame) else input_data
+            counts = input_data.copy()
         else:
-            norm = input_data.values if isinstance(input_data, pd.DataFrame) else input_data
+            norm = input_data.copy()
+    elif isinstance(input_data, np.ndarray):
+        # Create DataFrame with generic gene names
+        gene_names = [f"Gene_{i}" for i in range(input_data.shape[0])]
+        cell_names = [f"Cell_{i}" for i in range(input_data.shape[1])]
+        if is_log:
+            lognorm = pd.DataFrame(input_data, index=gene_names, columns=cell_names)
+        elif is_counts:
+            counts = pd.DataFrame(input_data, index=gene_names, columns=cell_names)
+        else:
+            norm = pd.DataFrame(input_data, index=gene_names, columns=cell_names)
     else:
         raise ValueError(f"Error: Unrecognized input format: {type(input_data)}")
     
     def remove_undetected_genes(mat):
         """Remove genes with no detected expression."""
-        no_detect = np.sum(mat > 0, axis=1) == 0
-        print(f"Removing {np.sum(no_detect)} undetected genes.")
-        return mat[~no_detect, :]
+        if isinstance(mat, pd.DataFrame):
+            detected = mat.sum(axis=1) > 0
+            filtered = mat[detected]
+            if not detected.all():
+                print(f"Removing {(~detected).sum()} undetected genes.")
+            return filtered
+        else:
+            # Fallback for numpy arrays
+            no_detect = np.sum(mat > 0, axis=1) == 0
+            print(f"Removing {np.sum(no_detect)} undetected genes.")
+            return mat[~no_detect, :]
     
     # Prefer raw counts to lognorm
     if 'counts' in locals():
@@ -482,9 +520,10 @@ def NBumiConvertData(input_data, is_log=False, is_counts=False, pseudocount=1):
         norm = 2**lognorm - pseudocount
     
     if 'norm' in locals():
-        sf = np.array([np.min(x[x > 0]) for x in norm.T])
+        sf = norm.min(axis=0)
+        sf[sf == 0] = 1  # Avoid division by zero
         sf = 1 / sf
-        counts = (norm / sf[np.newaxis, :])
+        counts = (norm.multiply(sf, axis=1) if isinstance(norm, pd.DataFrame) else norm * sf[np.newaxis, :])
         counts = np.ceil(counts)
         counts = remove_undetected_genes(counts)
         return counts.astype(int)

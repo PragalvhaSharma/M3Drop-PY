@@ -198,6 +198,16 @@ def NBumiPearsonResiduals(counts, fits=None):
     if fits is None:
         fits = NBumiFitModel(counts)
     
+    # Convert to numpy for calculations but preserve gene/cell names
+    if isinstance(counts, pd.DataFrame):
+        gene_names = counts.index
+        cell_names = counts.columns
+        counts_array = counts.values
+    else:
+        gene_names = None
+        cell_names = None
+        counts_array = counts
+    
     # Calculate expected values (mu) - matrix multiplication as in R
     # R: mus <- t(t(fits$vals$tjs/fits$vals$total)) %*% fits$vals$tis
     # This creates a genes x cells matrix where mus[i,j] = (tjs[i]/total) * tis[j]
@@ -205,8 +215,13 @@ def NBumiPearsonResiduals(counts, fits=None):
     mus = np.outer(tjs_normalized, fits['vals']['tis'])
     
     # Calculate Pearson residuals
-    pearson = (counts - mus) / np.sqrt(mus + mus**2 / fits['sizes'][:, np.newaxis])
-    return pearson
+    pearson = (counts_array - mus) / np.sqrt(mus + mus**2 / fits['sizes'][:, np.newaxis])
+    
+    # Return as DataFrame if input was DataFrame
+    if gene_names is not None and cell_names is not None:
+        return pd.DataFrame(pearson, index=gene_names, columns=cell_names)
+    else:
+        return pearson
 
 def NBumiPearsonResidualsApprox(counts, fits=None):
     """Calculate approximate Pearson residuals (Poisson approximation)"""
@@ -215,13 +230,28 @@ def NBumiPearsonResidualsApprox(counts, fits=None):
     else:
         vals = fits['vals']
     
+    # Convert to numpy for calculations but preserve gene/cell names
+    if isinstance(counts, pd.DataFrame):
+        gene_names = counts.index
+        cell_names = counts.columns
+        counts_array = counts.values
+    else:
+        gene_names = None
+        cell_names = None
+        counts_array = counts
+    
     # Calculate expected values (mu) - matrix multiplication as in R
     # R: mus <- t(t(vals$tjs/vals$total)) %*% vals$tis
     tjs_normalized = vals['tjs'] / vals['total']
     mus = np.outer(tjs_normalized, vals['tis'])
     
     # Calculate approximate Pearson residuals (Poisson)
-    pearson = (counts - mus) / np.sqrt(mus)
-    return pearson
+    pearson = (counts_array - mus) / np.sqrt(mus)
+    
+    # Return as DataFrame if input was DataFrame
+    if gene_names is not None and cell_names is not None:
+        return pd.DataFrame(pearson, index=gene_names, columns=cell_names)
+    else:
+        return pearson
 
 #############################

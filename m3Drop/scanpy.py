@@ -195,8 +195,8 @@ def nbumi_normalize(
         # Fit model first
         fit_result = NBumiFitModel(counts_df)
         
-        # Compute Pearson residuals - convert DataFrame to array
-        normalized = NBumiPearsonResiduals(counts_df.values, fit_result)
+        # Compute Pearson residuals - keep as DataFrame to preserve gene names
+        normalized = NBumiPearsonResiduals(counts_df, fit_result)
         
         # Store fit results
         adata.uns['nbumi_fit'] = fit_result
@@ -207,8 +207,8 @@ def nbumi_normalize(
         # Fit model
         fit_result = NBumiFitModel(counts_df)
         
-        # Normalize using NBumi method - convert DataFrame to array
-        normalized = NBumiImputeNorm(counts_df.values, fit_result, target_sum)
+        # Normalize using NBumi method - keep as DataFrame to preserve gene names
+        normalized = NBumiImputeNorm(counts_df, fit_result, target_sum)
         
         # Store fit results
         adata.uns['nbumi_fit'] = fit_result
@@ -216,7 +216,11 @@ def nbumi_normalize(
         adata.var['nbumi_mean'] = fit_result['vals']['tjs'] / fit_result['vals']['nc']
     
     # Update the expression matrix (transpose back to cells × genes)
-    adata.X = normalized.T
+    # Convert to numpy array for adata.X but gene order is preserved
+    if isinstance(normalized, pd.DataFrame):
+        adata.X = normalized.T.values
+    else:
+        adata.X = normalized.T
     
     return adata if copy else None
 
@@ -424,11 +428,15 @@ def nbumi_impute(
     # Fit NBumi model
     fit_result = NBumiFitModel(counts_df)
     
-    # Impute and normalize - convert DataFrame to array
-    imputed = NBumiImputeNorm(counts_df.values, fit_result, target_sum)
+    # Impute and normalize - keep as DataFrame to preserve gene names
+    imputed = NBumiImputeNorm(counts_df, fit_result, target_sum)
     
     # Update the expression matrix (transpose back to cells × genes)
-    adata.X = imputed.T
+    # Convert to numpy array for adata.X but gene order is preserved
+    if isinstance(imputed, pd.DataFrame):
+        adata.X = imputed.T.values
+    else:
+        adata.X = imputed.T
     
     # Store fit results
     adata.uns['nbumi_fit'] = fit_result
