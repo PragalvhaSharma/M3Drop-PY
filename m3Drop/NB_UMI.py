@@ -5,53 +5,136 @@ import scipy.sparse as sp
 from scipy import stats
 from scipy.stats import nbinom
 import matplotlib.pyplot as plt
+import time
+import os
+import h5py
+import anndata
+import cupy
+from cupy.sparse import csr_matrix as cp_csr_matrix
+from scipy.sparse import csr_matrix as sp_csr_matrix
+import statsmodels.api as sm
+from scipy.stats import norm
+from statsmodels.stats.multitest import multipletests
 
 #### Fitting #####
 
-def hidden_calc_vals(counts):
-    """Calculate hidden values for fitting models."""
+def ConvertDataSparse(
+    input_filename: str,
+    output_filename: str,
+    row_chunk_size: int = 5000
+):
+    """
+    Performs out-of-core data cleaning on a standard (cell, gene) sparse
+    .h5ad file. It correctly identifies and removes genes with zero counts
+    across all cells.
+    """
+    start_time = time.perf_counter()
+    print(f"FUNCTION: ConvertDataSparse() | FILE: {input_filename}")
+
+    with h5py.File(input_filename, 'r') as f_in:
+        x_group_in = f_in['X']
+        n_cells, n_genes = x_group_in.attrs['shape']
+
+        print("Phase [1/2]: Identifying genes with non-zero counts...")
+        genes_to_keep_mask = np.zeros(n_genes, dtype=bool)
+        
+        h5_indptr = x_group_in['indptr']
+        h5_indices = x_group_in['indices']
+
+        for i in range(0, n_cells, row_chunk_size):
+            end_row = min(i + row_chunk_size, n_cells)
+            print(f"Phase [1/2]: Processing: {end_row} of {n_cells} cells.", end='\r')
+
+            start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
+            if start_idx == end_idx:
+                continue
+
+            indices_slice = h5_indices[start_idx:end_idx]
+            unique_in_chunk = np.unique(indices_slice)
+            genes_to_keep_mask[unique_in_chunk] = True
+
+        n_genes_to_keep = np.sum(genes_to_keep_mask)
+        print(f"\nPhase [1/2]: COMPLETE | Result: {n_genes_to_keep} / {n_genes} genes retained.")
+
+        print("Phase [2/2]: Rounding up decimals and saving filtered output to disk...")
+        adata_meta = anndata.read_h5ad(input_filename, backed='r')
+        filtered_var_df = adata_meta.var[genes_to_keep_mask]
+        
+        adata_out_template = anndata.AnnData(obs=adata_meta.obs, var=filtered_var_df, uns=adata_meta.uns)
+        adata_out_template.write_h5ad(output_filename, compression="gzip")
+
+        with h5py.File(output_filename, 'a') as f_out:
+            if 'X' in f_out:
+                del f_out['X']
+            x_group_out = f_out.create_group('X')
+
+            out_data = x_group_out.create_dataset('data', shape=(0,), maxshape=(None,), dtype='float32')
+            out_indices = x_group_out.create_dataset('indices', shape=(0,), maxshape=(None,), dtype='int32')
+            out_indptr = x_group_out.create_dataset('indptr', shape=(n_cells + 1,), dtype='int64')
+            out_indptr[0] = 0
+            current_nnz = 0
+
+            h5_data = x_group_in['data']
+
+            for i in range(0, n_cells, row_chunk_size):
+                end_row = min(i + row_chunk_size, n_cells)
+                print(f"Phase [2/2]: Processing: {end_row} of {n_cells} cells.", end='\r')
+
+                start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
+                data_slice = h5_data[start_idx:end_idx]
+                indices_slice = h5_indices[start_idx:end_idx]
+                indptr_slice = h5_indptr[i:end_row+1] - h5_indptr[i]
+
+                chunk = sp_csr_matrix((data_slice, indices_slice, indptr_slice), shape=(end_row-i, n_genes))
+                filtered_chunk = chunk[:, genes_to_keep_mask]
+                filtered_chunk.data = np.ceil(filtered_chunk.data).astype('float32')
+
+                out_data.resize(current_nnz + filtered_chunk.nnz, axis=0)
+                out_data[current_nnz:] = filtered_chunk.data
+
+                out_indices.resize(current_nnz + filtered_chunk.nnz, axis=0)
+                out_indices[current_nnz:] = filtered_chunk.indices
+
+                new_indptr_list = filtered_chunk.indptr[1:].astype(np.int64) + current_nnz
+                out_indptr[i + 1 : end_row + 1] = new_indptr_list
+                
+                current_nnz += filtered_chunk.nnz
+
+            x_group_out.attrs['encoding-type'] = 'csr_matrix'
+            x_group_out.attrs['encoding-version'] = '0.1.0'
+            x_group_out.attrs['shape'] = np.array([n_cells, n_genes_to_keep], dtype='int64')
+        print(f"\nPhase [2/2]: COMPLETE | Output: {output_filename} {' ' * 50}")
+
+    end_time = time.perf_counter()
+    print(f"Total time: {end_time - start_time:.2f} seconds.\n")
+
+def _hidden_calc_vals_counts(counts):
+    """Original in-memory calculation of hidden values (genes x cells)."""
     if np.any(counts < 0):
         raise ValueError("Expression matrix contains negative values! Please provide raw UMI counts!")
-    
-    # Check if counts are integers (with some tolerance for floating point)
     if not np.allclose(counts, np.round(counts)):
         raise ValueError("Error: Expression matrix is not integers! Please provide raw UMI counts.")
-    
-    # Ensure we have row names (gene names)
     if isinstance(counts, pd.DataFrame):
         if counts.index.empty:
             counts.index = [str(i) for i in range(counts.shape[0])]
     elif isinstance(counts, np.ndarray):
-        # Convert to DataFrame if numpy array
         counts = pd.DataFrame(counts, index=[str(i) for i in range(counts.shape[0])])
-    
-    # Convert to sparse matrix if not already
     if not sp.issparse(counts):
         counts_sparse = sp.csr_matrix(counts.values if isinstance(counts, pd.DataFrame) else counts)
     else:
         counts_sparse = counts
-    
-    # Total molecules/gene
     tjs = np.array(counts_sparse.sum(axis=1)).flatten()
     no_detect = np.sum(tjs <= 0)
     if no_detect > 0:
         raise ValueError(f"Error: contains {no_detect} undetected genes.")
-    
-    # Total molecules/cell
     tis = np.array(counts_sparse.sum(axis=0)).flatten()
     if np.any(tis <= 0):
         raise ValueError("Error: all cells must have at least one detected molecule.")
-    
-    # Observed Dropouts per gene
     djs = counts_sparse.shape[1] - np.array((counts_sparse > 0).sum(axis=1)).flatten()
-    
-    # Observed Dropouts per cell
     dis = counts_sparse.shape[0] - np.array((counts_sparse > 0).sum(axis=0)).flatten()
-    
-    nc = counts_sparse.shape[1]  # Number of cells
-    ng = counts_sparse.shape[0]  # Number of genes
-    total = np.sum(tis)  # Total molecules sampled
-    
+    nc = counts_sparse.shape[1]
+    ng = counts_sparse.shape[0]
+    total = np.sum(tis)
     return {
         'tis': tis,
         'tjs': tjs,
@@ -62,6 +145,70 @@ def hidden_calc_vals(counts):
         'ng': ng
     }
 
+def hidden_calc_vals(filename_or_counts, chunk_size: int = 5000):
+    """
+    Calculates key statistics from a large, sparse (cell, gene) .h5ad file
+    using a memory-safe, GPU-accelerated, single-pass algorithm. If a matrix
+    is provided instead of a filename, falls back to the original in-memory
+    implementation (genes x cells).
+    """
+    if isinstance(filename_or_counts, str) and os.path.exists(filename_or_counts):
+        filename = filename_or_counts
+        start_time = time.perf_counter()
+        print(f"FUNCTION: hidden_calc_vals() | FILE: {filename}")
+        adata_meta = anndata.read_h5ad(filename, backed='r')
+        print("Phase [1/3]: Finding nc and ng...")
+        nc, ng = adata_meta.shape
+        print(f"Phase [1/3]: COMPLETE")
+        tis = np.zeros(nc, dtype='int64')
+        cell_non_zeros = np.zeros(nc, dtype='int64')
+        tjs_gpu = cupy.zeros(ng, dtype=cupy.float32)
+        gene_non_zeros_gpu = cupy.zeros(ng, dtype=cupy.int32)
+        print("Phase [2/3]: Calculating tis and tjs...")
+        with h5py.File(filename, 'r') as f_in:
+            x_group = f_in['X']
+            h5_indptr = x_group['indptr']
+            h5_data = x_group['data']
+            h5_indices = x_group['indices']
+            for i in range(0, nc, chunk_size):
+                end_row = min(i + chunk_size, nc)
+                print(f"Phase [2/3]: Processing: {end_row} of {nc} cells.", end='\r')
+                start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
+                data_slice = h5_data[start_idx:end_idx]
+                indices_slice = h5_indices[start_idx:end_idx]
+                indptr_slice = h5_indptr[i:end_row+1] - h5_indptr[i]
+                data_gpu = cupy.asarray(data_slice.copy(), dtype=cupy.float32)
+                indices_gpu = cupy.asarray(indices_slice.copy())
+                indptr_gpu = cupy.asarray(indptr_slice.copy())
+                chunk_gpu = cp_csr_matrix((data_gpu, indices_gpu, indptr_gpu), shape=(end_row-i, ng))
+                tis[i:end_row] = chunk_gpu.sum(axis=1).get().flatten()
+                cell_non_zeros_chunk = cupy.diff(indptr_gpu)
+                cell_non_zeros[i:end_row] = cell_non_zeros_chunk.get()
+                cupy.add.at(tjs_gpu, indices_gpu, data_gpu)
+                unique_indices_gpu, counts_gpu = cupy.unique(indices_gpu, return_counts=True)
+                cupy.add.at(gene_non_zeros_gpu, unique_indices_gpu, counts_gpu)
+        tjs = cupy.asnumpy(tjs_gpu)
+        gene_non_zeros = cupy.asnumpy(gene_non_zeros_gpu)
+        print(f"Phase [2/3]: COMPLETE{' ' * 50}")
+        print("Phase [3/3]: Calculating dis, djs, and total...")
+        dis = ng - cell_non_zeros
+        djs = nc - gene_non_zeros
+        total = tjs.sum()
+        print("Phase [3/3]: COMPLETE")
+        end_time = time.perf_counter()
+        print(f"Total time: {end_time - start_time:.2f} seconds.\n")
+        return {
+            'tis': pd.Series(tis, index=adata_meta.obs.index),
+            'tjs': pd.Series(tjs, index=adata_meta.var.index),
+            'dis': pd.Series(dis, index=adata_meta.obs.index),
+            'djs': pd.Series(djs, index=adata_meta.var.index),
+            'total': total,
+            'nc': nc,
+            'ng': ng
+        }
+    else:
+        return _hidden_calc_vals_counts(filename_or_counts)
+
 def NBumiConvertToInteger(mat):
     """Convert matrix to integer format."""
     mat = np.ceil(np.asarray(mat)).astype(int)
@@ -70,13 +217,10 @@ def NBumiConvertToInteger(mat):
     mat = mat[row_sums > 0, :]
     return mat
 
-def NBumiFitModel(counts):
-    """Fit negative binomial model to UMI counts."""
-    vals = hidden_calc_vals(counts)
-    
+def _NBumiFitModel_counts(counts):
+    """Original in-memory NB fit using counts (genes x cells)."""
+    vals = _hidden_calc_vals_counts(counts)
     min_size = 1e-10
-    
-    # Calculate row-wise variance
     my_rowvar = np.zeros(counts.shape[0])
     for i in range(counts.shape[0]):
         mu_is = vals['tjs'][i] * vals['tis'] / vals['total']
@@ -85,21 +229,97 @@ def NBumiFitModel(counts):
         else:
             row_data = counts[i, :]
         my_rowvar[i] = np.var(row_data - mu_is)
-    
-    # Calculate size parameter
     numerator = vals['tjs']**2 * (np.sum(vals['tis']**2) / vals['total']**2)
     denominator = (vals['nc'] - 1) * my_rowvar - vals['tjs']
     size = numerator / denominator
-    
     max_size = 10 * np.max(size[size > 0])
     size[size < 0] = max_size
     size[size < min_size] = min_size
-    
     return {
         'var_obs': my_rowvar,
         'sizes': size,
         'vals': vals
     }
+
+def NBumiFitModel(*args, **kwargs):
+    """
+    GPU-accelerated NB fit for cleaned .h5ad data when called with
+    (cleaned_filename: str, stats: dict, chunk_size: int = 5000).
+    Falls back to original in-memory implementation when called with a
+    single counts argument.
+    """
+    if len(args) == 1 and not kwargs:
+        return _NBumiFitModel_counts(args[0])
+
+    if len(args) >= 2 and isinstance(args[1], dict):
+        cleaned_filename = args[0]
+        stats = args[1]
+        chunk_size = kwargs.get('chunk_size', 5000)
+        start_time = time.perf_counter()
+        print(f"FUNCTION: NBumiFitModel() | FILE: {cleaned_filename}")
+        tjs = stats['tjs'].values if isinstance(stats['tjs'], pd.Series) else stats['tjs']
+        tis = stats['tis'].values if isinstance(stats['tis'], pd.Series) else stats['tis']
+        nc, ng = stats['nc'], stats['ng']
+        total = stats['total']
+        tjs_gpu = cupy.asarray(tjs, dtype=cupy.float64)
+        tis_gpu = cupy.asarray(tis, dtype=cupy.float64)
+        sum_x_sq_gpu = cupy.zeros(ng, dtype=cupy.float64)
+        sum_2xmu_gpu = cupy.zeros(ng, dtype=cupy.float64)
+        print("Phase [1/3]: Pre-calculating sum of squared expectations...")
+        sum_tis_sq_gpu = cupy.sum(tis_gpu**2)
+        sum_mu_sq_gpu = (tjs_gpu**2 / total**2) * sum_tis_sq_gpu
+        print("Phase [1/3]: COMPLETE")
+        print("Phase [2/3]: Calculating variance components from data chunks...")
+        with h5py.File(cleaned_filename, 'r') as f_in:
+            x_group = f_in['X']
+            h5_indptr = x_group['indptr']
+            h5_data = x_group['data']
+            h5_indices = x_group['indices']
+            for i in range(0, nc, chunk_size):
+                end_row = min(i + chunk_size, nc)
+                print(f"Phase [2/3]: Processing: {end_row} of {nc} cells.", end='\r')
+                start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
+                if start_idx == end_idx:
+                    continue
+                data_gpu = cupy.asarray(h5_data[start_idx:end_idx], dtype=cupy.float64)
+                indices_gpu = cupy.asarray(h5_indices[start_idx:end_idx])
+                indptr_gpu = cupy.asarray(h5_indptr[i:end_row+1] - h5_indptr[i])
+                cupy.add.at(sum_x_sq_gpu, indices_gpu, data_gpu**2)
+                nnz_in_chunk = indptr_gpu[-1].item()
+                cell_boundary_markers = cupy.zeros(nnz_in_chunk, dtype=cupy.int32)
+                if len(indptr_gpu) > 1:
+                    cell_boundary_markers[indptr_gpu[:-1]] = 1
+                cell_indices_chunk = cupy.cumsum(cell_boundary_markers, axis=0) - 1
+                cell_indices_gpu = cell_indices_chunk + i
+                tis_per_nz = tis_gpu[cell_indices_gpu]
+                tjs_per_nz = tjs_gpu[indices_gpu]
+                term_vals = 2 * data_gpu * tjs_per_nz * tis_per_nz / total
+                cupy.add.at(sum_2xmu_gpu, indices_gpu, term_vals)
+                del data_gpu, indices_gpu, indptr_gpu, cell_indices_gpu
+                del tis_per_nz, tjs_per_nz, term_vals
+                if i % (chunk_size * 10) == 0:
+                    cupy.get_default_memory_pool().free_all_blocks()
+        print(f"Phase [2/3]: COMPLETE {' ' * 50}")
+        print("Phase [3/3]: Finalizing dispersion and variance calculations...")
+        sum_sq_dev_gpu = sum_x_sq_gpu - sum_2xmu_gpu + sum_mu_sq_gpu
+        var_obs_gpu = sum_sq_dev_gpu / (nc - 1)
+        sizes_gpu = cupy.full(ng, 10000.0)
+        numerator_gpu = (tjs_gpu**2 / total**2) * sum_tis_sq_gpu
+        denominator_gpu = sum_sq_dev_gpu - tjs_gpu
+        stable_mask = denominator_gpu > 1e-6
+        sizes_gpu[stable_mask] = numerator_gpu[stable_mask] / denominator_gpu[stable_mask]
+        sizes_gpu[sizes_gpu <= 0] = 10000.0
+        var_obs_cpu = var_obs_gpu.get()
+        sizes_cpu = sizes_gpu.get()
+        print("Phase [3/3]: COMPLETE")
+        end_time = time.perf_counter()
+        print(f"Total time: {end_time - start_time:.2f} seconds.\n")
+        return {
+            'var_obs': pd.Series(var_obs_cpu, index=stats['tjs'].index if isinstance(stats['tjs'], pd.Series) else None),
+            'sizes': pd.Series(sizes_cpu, index=stats['tjs'].index if isinstance(stats['tjs'], pd.Series) else None),
+            'vals': stats
+        }
+    raise ValueError("NBumiFitModel called with unsupported arguments")
 
 def NBumiFitBasicModel(counts):
     """Fit basic negative binomial model."""
@@ -176,30 +396,32 @@ def NBumiCheckFit(counts, fit, suppress_plot=False):
     }
 
 def NBumiFitDispVsMean(fit, suppress_plot=True):
-    """Fit dispersion vs mean relationship."""
+    """Fits a linear model to the log-dispersion vs log-mean of gene expression."""
     vals = fit['vals']
-    size_g = fit['sizes']
-    
-    forfit = (fit['sizes'] < np.max(size_g)) & (vals['tjs'] > 0) & (size_g > 0)
-    higher = np.log2(vals['tjs'] / vals['nc']) > 4  # As per Grun et al.
-    
-    if np.sum(higher) > 2000:
+    size_g = fit['sizes'] if isinstance(fit['sizes'], np.ndarray) else np.asarray(fit['sizes'])
+    tjs = vals['tjs'].values if isinstance(vals['tjs'], pd.Series) else vals['tjs']
+    nc = vals['nc']
+    mean_expression = tjs / nc
+    forfit = (np.isfinite(size_g)) & (size_g < 1e6) & (mean_expression > 1e-3) & (size_g > 0)
+    log2_mean_expr = np.log2(mean_expression, where=(mean_expression > 0))
+    higher = log2_mean_expr > 4
+    if np.sum(higher & forfit) > 2000:
         forfit = higher & forfit
-    
-    x = np.log(vals['tjs'][forfit] / vals['nc'])
     y = np.log(size_g[forfit])
-    
-    # Linear regression
-    coeffs = np.polyfit(x, y, 1)
-    
+    x = np.log(mean_expression[forfit])
+    X = sm.add_constant(x)
+    model = sm.OLS(y, X).fit()
     if not suppress_plot:
-        plt.scatter(x, y)
-        plt.plot(x, np.polyval(coeffs, x), 'r-')
-        plt.xlabel('Log Mean Expression')
-        plt.ylabel('Log Size')
+        plt.figure(figsize=(7, 6))
+        plt.scatter(x, y, alpha=0.5, label="Data Points")
+        plt.plot(x, model.fittedvalues, color='red', label='Regression Fit')
+        plt.title('Dispersion vs. Mean Expression')
+        plt.xlabel("Log Mean Expression")
+        plt.ylabel("Log Size (Dispersion)")
+        plt.legend()
+        plt.grid(True)
         plt.show()
-    
-    return [coeffs[1], coeffs[0]]  # Return as [intercept, slope] to match R
+    return model.params
 
 def NBumiCheckFitFS(counts, fit, suppress_plot=False):
     """Check fit with feature selection."""
@@ -306,95 +528,162 @@ def hidden_shift_size(mu_all, size_all, mu_group, coeffs):
 
 #### Feature Selection ####
 
-def NBumiFeatureSelectionHighVar(fit):
-    """Feature selection based on high variance."""
+def NBumiFeatureSelectionHighVar(fit: dict) -> pd.DataFrame:
+    """
+    Selects features (genes) with higher variance than expected.
+    Returns a DataFrame sorted by residual.
+    """
+    start_time = time.perf_counter()
+    print(f"FUNCTION: NBumiFeatureSelectionHighVar()")
+    print("Phase [1/1]: Calculating residuals for high variance selection...")
     vals = fit['vals']
     coeffs = NBumiFitDispVsMean(fit, suppress_plot=True)
-    exp_size = np.exp(coeffs[0] + coeffs[1] * np.log(vals['tjs'] / vals['nc']))
-    res = np.log(fit['sizes']) - np.log(exp_size)
-    
-    # Create a sorted dictionary-like structure
-    gene_names = list(range(len(res)))  # Replace with actual gene names if available
-    sorted_indices = np.argsort(res)[::-1]  # Sort in descending order
-    
-    return {gene_names[i]: res[i] for i in sorted_indices}
-
-def NBumiFeatureSelectionCombinedDrop(fit, ntop=None, method="fdr", qval_thresh=0.05, suppress_plot=True):
-    """Feature selection based on combined dropout analysis."""
-    vals = fit['vals']
-    
-    coeffs = NBumiFitDispVsMean(fit, suppress_plot=True)
-    exp_size = np.exp(coeffs[0] + coeffs[1] * np.log(vals['tjs'] / vals['nc']))
-    
-    droprate_exp = np.zeros(vals['ng'])
-    droprate_exp_err = np.zeros(vals['ng'])
-    
-    for i in range(vals['ng']):
-        mu_is = vals['tjs'][i] * vals['tis'] / vals['total']
-        p_is = (1 + mu_is / exp_size[i])**(-exp_size[i])
-        p_var_is = p_is * (1 - p_is)
-        droprate_exp[i] = np.sum(p_is) / vals['nc']
-        droprate_exp_err[i] = np.sqrt(np.sum(p_var_is) / (vals['nc']**2))
-    
-    droprate_exp[droprate_exp < 1/vals['nc']] = 1/vals['nc']
-    droprate_obs = vals['djs'] / vals['nc']
-    droprate_obs_err = np.sqrt(droprate_obs * (1 - droprate_obs) / vals['nc'])
-    
-    diff = droprate_obs - droprate_exp
-    combined_err = np.sqrt(droprate_exp_err**2 + droprate_obs_err**2)
-    zed = diff / combined_err
-    pvalue = 1 - stats.norm.cdf(zed)  # One-tailed test
-    
-    # Handle gene names
-    gene_names = list(range(len(pvalue)))  # Replace with actual gene names if available
-    
-    # Sort by p-value and effect size for ties
-    reorder = np.lexsort((droprate_exp - droprate_obs, pvalue))
-    
-    out = pvalue[reorder]
-    diff = diff[reorder]
-    gene_names = [gene_names[i] for i in reorder]
-    
-    # Multiple testing correction
-    qval = stats.false_discovery_control(out, method='bh') if method == "fdr" else out
-    
-    if ntop is None:
-        mask = qval < qval_thresh
-        out = out[mask]
-        diff = diff[mask]
-        qval = qval[mask]
-        gene_names = [gene_names[i] for i in range(len(mask)) if mask[i]]
-    else:
-        out = out[:ntop]
-        diff = diff[:ntop]
-        qval = qval[:ntop]
-        gene_names = gene_names[:ntop]
-    
-    outTABLE = pd.DataFrame({
-        'Gene': gene_names,
-        'effect_size': diff,
-        'p_value': out,
-        'q_value': qval
+    mean_expression = (vals['tjs'].values if isinstance(vals['tjs'], pd.Series) else vals['tjs']) / vals['nc']
+    with np.errstate(divide='ignore', invalid='ignore'):
+        log_mean_expression = np.log(mean_expression)
+        log_mean_expression[np.isneginf(log_mean_expression)] = 0
+        exp_size = np.exp(coeffs[0] + coeffs[1] * log_mean_expression)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        sizes_vals = fit['sizes'].values if isinstance(fit['sizes'], pd.Series) else fit['sizes']
+        res = np.log(sizes_vals) - np.log(exp_size)
+    gene_index = fit['sizes'].index if isinstance(fit['sizes'], pd.Series) else list(range(len(res)))
+    results_df = pd.DataFrame({
+        'Gene': gene_index,
+        'Residual': res
     })
-    
+    final_table = results_df.sort_values(by='Residual', ascending=True)
+    print("Phase [1/1]: COMPLETE")
+    end_time = time.perf_counter()
+    print(f"Total time: {end_time - start_time:.4f} seconds.\n")
+    return final_table
+
+def NBumiFeatureSelectionCombinedDrop(
+    fit: dict,
+    cleaned_filename: str = None,
+    chunk_size: int = 5000,
+    method: str = "fdr_bh",
+    qval_thresh: float = 0.05,
+    suppress_plot: bool = True,
+    ntop: int = None
+) -> pd.DataFrame:
+    """
+    Selects features with a significantly higher dropout rate than expected,
+    using a GPU-accelerated approach on summary statistics.
+    """
+    start_time = time.perf_counter()
+    print(f"FUNCTION: NBumiFeatureSelectionCombinedDrop() | FILE: {cleaned_filename}")
+    print("Phase [1/3]: Initializing arrays and calculating expected dispersion...")
+    vals = fit['vals']
+    coeffs = NBumiFitDispVsMean(fit, suppress_plot=True)
+    tjs_vals = vals['tjs'].values if isinstance(vals['tjs'], pd.Series) else vals['tjs']
+    tis_vals = vals['tis'].values if isinstance(vals['tis'], pd.Series) else vals['tis']
+    total = vals['total']
+    nc = vals['nc']
+    ng = vals['ng']
+    tjs_gpu = cupy.asarray(tjs_vals)
+    tis_gpu = cupy.asarray(tis_vals)
+    mean_expression_cpu = tjs_vals / nc
+    with np.errstate(divide='ignore'):
+        exp_size_cpu = np.exp(coeffs[0] + coeffs[1] * np.log(mean_expression_cpu))
+    exp_size_gpu = cupy.asarray(exp_size_cpu)
+    p_sum_gpu = cupy.zeros(ng, dtype=cupy.float64)
+    p_var_sum_gpu = cupy.zeros(ng, dtype=cupy.float64)
+    print("Phase [1/3]: COMPLETE")
+    print("Phase [2/3]: Calculating expected dropout sums from data chunks...")
+    for i in range(0, nc, chunk_size):
+        end_col = min(i + chunk_size, nc)
+        print(f"Phase [2/3]: Processing: {end_col} of {nc} cells.", end='\r')
+        tis_chunk_gpu = tis_gpu[i:end_col]
+        mu_chunk_gpu = tjs_gpu[:, cupy.newaxis] * tis_chunk_gpu[cupy.newaxis, :] / total
+        p_is_chunk_gpu = cupy.power(1 + mu_chunk_gpu / exp_size_gpu[:, cupy.newaxis], -exp_size_gpu[:, cupy.newaxis])
+        p_var_is_chunk_gpu = p_is_chunk_gpu * (1 - p_is_chunk_gpu)
+        p_sum_gpu += p_is_chunk_gpu.sum(axis=1)
+        p_var_sum_gpu += p_var_is_chunk_gpu.sum(axis=1)
+    print(f"Phase [2/3]: COMPLETE {' ' * 50}")
+    print("Phase [3/3]: Performing statistical test and adjusting p-values...")
+    p_sum_cpu = p_sum_gpu.get()
+    p_var_sum_cpu = p_var_sum_gpu.get()
+    droprate_exp = p_sum_cpu / nc
+    droprate_exp_err = np.sqrt(p_var_sum_cpu / (nc**2))
+    djs_vals = vals['djs'].values if isinstance(vals['djs'], pd.Series) else vals['djs']
+    droprate_obs = djs_vals / nc
+    diff = droprate_obs - droprate_exp
+    combined_err = np.sqrt(droprate_exp_err**2 + (droprate_obs * (1 - droprate_obs) / nc))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        Zed = diff / combined_err
+    pvalue = norm.sf(Zed)
+    gene_index = vals['tjs'].index if isinstance(vals['tjs'], pd.Series) else list(range(len(pvalue)))
+    results_df = pd.DataFrame({
+        'Gene': gene_index,
+        'p.value': pvalue,
+        'effect_size': diff
+    })
+    results_df = results_df.sort_values(by='p.value')
+    # Backward-compat for method name
+    adj_method = 'fdr_bh' if method in (None, 'fdr', 'bh') else method
+    qval = multipletests(results_df['p.value'].fillna(1), method=adj_method)[1]
+    results_df['q.value'] = qval
+    if ntop is None:
+        final_table = results_df[results_df['q.value'] < qval_thresh].copy()
+    else:
+        final_table = results_df.head(ntop).copy()
+    # Add aliases for backward compatibility
+    final_table['p_value'] = final_table['p.value']
+    final_table['q_value'] = final_table['q.value']
+    print("Phase [3/3]: COMPLETE")
+    end_time = time.perf_counter()
+    print(f"Total time: {end_time - start_time:.2f} seconds.\n")
+    return final_table[['Gene', 'effect_size', 'p.value', 'q.value', 'p_value', 'q_value']]
+
+def NBumiCombinedDropVolcano(
+    results_df: pd.DataFrame,
+    qval_thresh: float = 0.05,
+    effect_size_thresh: float = 0.25,
+    top_n_genes: int = 10,
+    suppress_plot: bool = False,
+    plot_filename: str = None
+):
+    """
+    Generates a volcano plot from the results of feature selection.
+    """
+    start_time = time.perf_counter()
+    print(f"FUNCTION: NBumiCombinedDropVolcano()")
+    print("Phase [1/1]: Preparing data for visualization...")
+    df = results_df.copy()
+    non_zero_min = df[df['q.value'] > 0]['q.value'].min()
+    df['q.value'] = df['q.value'].replace(0, non_zero_min)
+    df['-log10_qval'] = -np.log10(df['q.value'])
+    df['color'] = 'grey'
+    sig_up = (df['q.value'] < qval_thresh) & (df['effect_size'] > effect_size_thresh)
+    sig_down = (df['q.value'] < qval_thresh) & (df['effect_size'] < -effect_size_thresh)
+    df.loc[sig_up, 'color'] = 'red'
+    df.loc[sig_down, 'color'] = 'blue'
+    print("Phase [1/1]: COMPLETE")
+    print("Phase [2/2]: Generating plot...")
+    plt.figure(figsize=(10, 8))
+    plt.scatter(df['effect_size'], df['-log10_qval'], c=df['color'], s=10, alpha=0.6)
+    plt.axvline(x=effect_size_thresh, linestyle='--', color='grey', linewidth=0.8)
+    plt.axvline(x=-effect_size_thresh, linestyle='--', color='grey', linewidth=0.8)
+    plt.axhline(y=-np.log10(qval_thresh), linestyle='--', color='grey', linewidth=0.8)
+    top_genes = df.nsmallest(top_n_genes, 'q.value')
+    for _, row in top_genes.iterrows():
+        plt.text(row['effect_size'], row['-log10_qval'], row['Gene'],
+                 fontsize=9, ha='left', va='bottom', alpha=0.8)
+    plt.title('Volcano Plot of Dropout Feature Selection')
+    plt.xlabel('Effect Size (Observed - Expected Dropout Rate)')
+    plt.ylabel('-log10 (Adjusted p-value)')
+    plt.grid(True, linestyle='--', alpha=0.3)
+    ax = plt.gca()
+    if plot_filename:
+        plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
+        print(f"STATUS: Volcano plot saved to '{plot_filename}'")
     if not suppress_plot:
-        xes = np.log10(vals['tjs'] / vals['nc'])
-        
-        # Create density colors (simplified)
-        plt.figure(figsize=(10, 6))
-        plt.scatter(xes, droprate_obs, c='gray', alpha=0.6, s=20)
-        
-        # Highlight selected genes
-        toplot = np.isin(list(range(len(vals['tjs']))), 
-                        [reorder[i] for i in range(len(gene_names))])
-        plt.scatter(xes[toplot], droprate_obs[toplot], c='darkorange', s=20)
-        plt.scatter(xes, droprate_exp, c='dodgerblue', s=20)
-        
-        plt.xlabel('log10(expression)')
-        plt.ylabel('Dropout Rate')
         plt.show()
-    
-    return outTABLE
+    plt.close()
+    print("Phase [2/2]: COMPLETE")
+    end_time = time.perf_counter()
+    print(f"Total time: {end_time - start_time:.2f} seconds.\n")
+    return ax
 
 def PoissonUMIFeatureSelectionDropouts(fit):
     """Feature selection using Poisson model for dropouts."""
