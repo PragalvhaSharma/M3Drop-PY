@@ -321,26 +321,21 @@ def NBumiFitModel(*args, **kwargs):
         }
     raise ValueError("NBumiFitModel called with unsupported arguments")
 
-def NBumiFitBasicModel(counts):
-    """Fit basic negative binomial model."""
+def _NBumiFitBasicModel_counts(counts):
+    """Fit basic negative binomial model (in-memory counts: genes x cells)."""
     vals = hidden_calc_vals(counts)
-    
     mus = vals['tjs'] / vals['nc']
-    
     if isinstance(counts, pd.DataFrame):
         gm = counts.mean(axis=1).values
         v = ((counts.subtract(gm, axis=0))**2).sum(axis=1).values / (counts.shape[1] - 1)
     else:
         gm = np.mean(counts, axis=1)
         v = np.sum((counts - gm[:, np.newaxis])**2, axis=1) / (counts.shape[1] - 1)
-    
     errs = v < mus
     v[errs] = mus[errs] + 1e-10
-    
     size = mus**2 / (v - mus)
     max_size = np.max(mus)**2
     size[errs] = max_size
-    
     my_rowvar = np.zeros(counts.shape[0])
     for i in range(counts.shape[0]):
         if isinstance(counts, pd.DataFrame):
@@ -348,12 +343,107 @@ def NBumiFitBasicModel(counts):
         else:
             row_data = counts[i, :]
         my_rowvar[i] = np.var(row_data - mus[i])
-    
     return {
         'var_obs': my_rowvar,
         'sizes': size,
         'vals': vals
     }
+
+def NBumiFitBasicModel(*args, **kwargs):
+    """
+    Fits a simpler, unadjusted NB model.
+    - If called as (counts), runs the original in-memory implementation (genes x cells).
+    - If called as (cleaned_filename: str, stats: dict, is_logged=False, chunk_size: int = 5000),
+      runs an out-of-core GPU-accelerated variant for a standard (cell, gene) .h5ad file.
+    """
+    # Backward-compatible in-memory path
+    if len(args) == 1 and not kwargs and not isinstance(args[0], str):
+        return _NBumiFitBasicModel_counts(args[0])
+
+    # New out-of-core GPU path
+    if len(args) >= 2 and isinstance(args[0], str) and isinstance(args[1], dict):
+        cleaned_filename = args[0]
+        stats = args[1]
+        is_logged = kwargs.get('is_logged', False)
+        chunk_size = kwargs.get('chunk_size', 5000)
+
+        start_time = time.perf_counter()
+        print(f"FUNCTION: NBumiFitBasicModel() | FILE: {cleaned_filename}")
+
+        # Phase 1: Initialization
+        print("Phase [1/2]: Initializing parameters and arrays on GPU...")
+        tjs = stats['tjs'].values if isinstance(stats['tjs'], pd.Series) else stats['tjs']
+        nc, ng = stats['nc'], stats['ng']
+        tjs_gpu = cupy.asarray(tjs, dtype=cupy.float64)
+        sum_x_sq_gpu = cupy.zeros(ng, dtype=cupy.float64)
+        print("Phase [1/2]: COMPLETE")
+
+        # Phase 2: Calculate Variance from Data Chunks
+        print("Phase [2/2]: Calculating variance from data chunks...")
+        with h5py.File(cleaned_filename, 'r') as f_in:
+            x_group = f_in['X']
+            h5_indptr = x_group['indptr']
+            h5_data = x_group['data']
+            h5_indices = x_group['indices']
+
+            for i in range(0, nc, chunk_size):
+                end_row = min(i + chunk_size, nc)
+                print(f"Phase [2/2]: Processing: {end_row} of {nc} cells.", end='\r')
+
+                start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
+                if start_idx == end_idx:
+                    continue
+
+                max_elements = 5_000_000
+                if end_idx - start_idx > max_elements:
+                    for sub_start in range(start_idx, end_idx, max_elements):
+                        sub_end = min(sub_start + max_elements, end_idx)
+                        data_slice = h5_data[sub_start:sub_end]
+                        indices_slice = h5_indices[sub_start:sub_end]
+                        data_gpu = cupy.asarray(data_slice, dtype=cupy.float64)
+                        indices_gpu = cupy.asarray(indices_slice)
+                        cupy.add.at(sum_x_sq_gpu, indices_gpu, data_gpu**2)
+                        del data_gpu, indices_gpu
+                        cupy.get_default_memory_pool().free_all_blocks()
+                else:
+                    data_slice = h5_data[start_idx:end_idx]
+                    indices_slice = h5_indices[start_idx:end_idx]
+                    data_gpu = cupy.asarray(data_slice, dtype=cupy.float64)
+                    indices_gpu = cupy.asarray(indices_slice)
+                    cupy.add.at(sum_x_sq_gpu, indices_gpu, data_gpu**2)
+                    del data_gpu, indices_gpu
+                    cupy.get_default_memory_pool().free_all_blocks()
+
+        print(f"Phase [2/2]: COMPLETE                                       ")
+
+        # Final calculations on GPU
+        if is_logged:
+            raise NotImplementedError("Logged data variance calculation is not implemented for out-of-core.")
+        else:
+            mean_x_sq_gpu = sum_x_sq_gpu / nc
+            mean_mu_gpu = tjs_gpu / nc
+            my_rowvar_gpu = mean_x_sq_gpu - mean_mu_gpu**2
+            size_gpu = mean_mu_gpu**2 / (my_rowvar_gpu - mean_mu_gpu)
+
+        max_size_val = cupy.nanmax(size_gpu) * 10
+        if cupy.isnan(max_size_val):
+            max_size_val = 1000
+        size_gpu[cupy.isnan(size_gpu) | (size_gpu <= 0)] = max_size_val
+        size_gpu[size_gpu < 1e-10] = 1e-10
+
+        my_rowvar_cpu = my_rowvar_gpu.get()
+        sizes_cpu = size_gpu.get()
+
+        end_time = time.perf_counter()
+        print(f"Total time: {end_time - start_time:.2f} seconds.\n")
+
+        return {
+            'var_obs': pd.Series(my_rowvar_cpu, index=stats['tjs'].index if isinstance(stats['tjs'], pd.Series) else None),
+            'sizes': pd.Series(sizes_cpu, index=stats['tjs'].index if isinstance(stats['tjs'], pd.Series) else None),
+            'vals': stats
+        }
+
+    raise ValueError("NBumiFitBasicModel called with unsupported arguments")
 
 def NBumiCheckFit(counts, fit, suppress_plot=False):
     """Check the fit of the negative binomial model."""
@@ -423,41 +513,34 @@ def NBumiFitDispVsMean(fit, suppress_plot=True):
         plt.show()
     return model.params
 
-def NBumiCheckFitFS(counts, fit, suppress_plot=False):
-    """Check fit with feature selection."""
+def _NBumiCheckFitFS_counts(counts, fit, suppress_plot=False):
+    """Check fit with feature selection (in-memory counts path)."""
     vals = fit['vals']
     size_coeffs = NBumiFitDispVsMean(fit, suppress_plot=True)
     smoothed_size = np.exp(size_coeffs[0] + size_coeffs[1] * np.log(vals['tjs'] / vals['nc']))
-    
     row_ps = np.zeros(counts.shape[0])
     col_ps = np.zeros(counts.shape[1])
-    
     for i in range(counts.shape[0]):
         mu_is = vals['tjs'][i] * vals['tis'] / vals['total']
         p_is = (1 + mu_is / smoothed_size[i])**(-smoothed_size[i])
         row_ps[i] = np.sum(p_is)
         col_ps += p_is
-    
     if not suppress_plot:
         plt.figure(figsize=(12, 5))
-        
         plt.subplot(1, 2, 1)
         plt.scatter(vals['djs'], row_ps)
         plt.plot([0, max(vals['djs'])], [0, max(vals['djs'])], 'r-')
         plt.xlabel('Observed')
         plt.ylabel('Fit')
         plt.title('Gene-specific Dropouts')
-        
         plt.subplot(1, 2, 2)
         plt.scatter(vals['dis'], col_ps)
         plt.plot([0, max(vals['dis'])], [0, max(vals['dis'])], 'r-')
         plt.xlabel('Observed')
         plt.ylabel('Expected')
         plt.title('Cell-specific Dropouts')
-        
         plt.tight_layout()
         plt.show()
-    
     return {
         'gene_error': np.sum((vals['djs'] - row_ps)**2),
         'cell_error': np.sum((vals['dis'] - col_ps)**2),
@@ -465,60 +548,348 @@ def NBumiCheckFitFS(counts, fit, suppress_plot=False):
         'colPs': col_ps
     }
 
-def NBumiCompareModels(counts, size_factor=None):
-    """Compare different normalization models."""
+def NBumiCheckFitFS(*args, **kwargs):
+    """
+    Check fit with feature selection.
+    - If called as (counts, fit, suppress_plot=False), uses in-memory path.
+    - If called as (cleaned_filename: str, fit: dict, chunk_size=..., suppress_plot=False, plot_filename=None),
+      uses GPU-accelerated out-of-core computation against a (cell, gene) .h5ad file.
+    """
+    # In-memory path
+    if len(args) >= 2 and not isinstance(args[0], str):
+        counts, fit = args[0], args[1]
+        suppress_plot = kwargs.get('suppress_plot', False)
+        return _NBumiCheckFitFS_counts(counts, fit, suppress_plot)
+
+    # Out-of-core GPU path
+    if len(args) >= 2 and isinstance(args[0], str) and isinstance(args[1], dict):
+        cleaned_filename = args[0]
+        fit = args[1]
+        chunk_size = kwargs.get('chunk_size', 5000)
+        suppress_plot = kwargs.get('suppress_plot', False)
+        plot_filename = kwargs.get('plot_filename', None)
+
+        start_time = time.perf_counter()
+        print(f"FUNCTION: NBumiCheckFitFS() | FILE: {cleaned_filename}")
+
+        # Phase 1: Initialization
+        print("Phase [1/2]: Initializing parameters and arrays on GPU...")
+        vals = fit['vals']
+        size_coeffs = NBumiFitDispVsMean(fit, suppress_plot=True)
+        tjs_gpu = cupy.asarray(vals['tjs'].values if isinstance(vals['tjs'], pd.Series) else vals['tjs'], dtype=cupy.float64)
+        tis_gpu_all = cupy.asarray(vals['tis'].values if isinstance(vals['tis'], pd.Series) else vals['tis'], dtype=cupy.float64)
+        total = vals['total']
+        nc, ng = vals['nc'], vals['ng']
+        mean_expression_gpu = tjs_gpu / nc
+        log_mean_expression_gpu = cupy.log(mean_expression_gpu)
+        smoothed_size_gpu = cupy.exp(size_coeffs[0] + size_coeffs[1] * log_mean_expression_gpu)
+        row_ps_gpu = cupy.zeros(ng, dtype=cupy.float64)
+        col_ps_gpu = cupy.zeros(nc, dtype=cupy.float64)
+        print("Phase [1/2]: COMPLETE")
+
+        # Phase 2: Calculate Expected Dropouts
+        print("Phase [2/2]: Calculating expected dropouts from data chunks...")
+        mempool = cupy.get_default_memory_pool()
+        free_mem_mb = cupy.cuda.Device().mem_info[0] / (1024**2)
+        bytes_per_cell = ng * 8 * 2
+        optimal_chunk = min(kwargs.get('chunk_size', 5000), int(free_mem_mb * 0.4 * 1024**2 / bytes_per_cell))
+        optimal_chunk = max(100, optimal_chunk)
+        print(f"  Using adaptive chunk size: {optimal_chunk} (original: {chunk_size})")
+
+        for i in range(0, nc, optimal_chunk):
+            end_col = min(i + optimal_chunk, nc)
+            print(f"Phase [2/2]: Processing: {end_col} of {nc} cells.", end='\r')
+            tis_chunk_gpu = tis_gpu_all[i:end_col]
+            mu_chunk_gpu = tjs_gpu[:, cupy.newaxis] * tis_chunk_gpu[cupy.newaxis, :] / total
+            base = 1 + mu_chunk_gpu / smoothed_size_gpu[:, cupy.newaxis]
+            p_is_chunk_gpu = cupy.power(base, -smoothed_size_gpu[:, cupy.newaxis])
+            p_is_chunk_gpu = cupy.nan_to_num(p_is_chunk_gpu, nan=0.0, posinf=1.0, neginf=0.0)
+            row_ps_gpu += p_is_chunk_gpu.sum(axis=1)
+            col_ps_gpu[i:end_col] = p_is_chunk_gpu.sum(axis=0)
+            del mu_chunk_gpu, p_is_chunk_gpu, base, tis_chunk_gpu
+            if (i // optimal_chunk) % 10 == 0:
+                mempool.free_all_blocks()
+
+        print(f"Phase [2/2]: COMPLETE{' ' * 50}")
+
+        row_ps_cpu = row_ps_gpu.get()
+        col_ps_cpu = col_ps_gpu.get()
+        djs_cpu = vals['djs'].values if isinstance(vals['djs'], pd.Series) else vals['djs']
+        dis_cpu = vals['dis'].values if isinstance(vals['dis'], pd.Series) else vals['dis']
+
+        if not suppress_plot:
+            plt.figure(figsize=(12, 5))
+            plt.subplot(1, 2, 1)
+            plt.scatter(djs_cpu, row_ps_cpu, alpha=0.5, s=10)
+            plt.title("Gene-specific Dropouts (Smoothed)")
+            plt.xlabel("Observed")
+            plt.ylabel("Fit")
+            lims = [min(plt.xlim()[0], plt.ylim()[0]), max(plt.xlim()[1], plt.ylim()[1])]
+            plt.plot(lims, lims, 'r-', alpha=0.75, zorder=0, label="y=x line")
+            plt.grid(True); plt.legend()
+            plt.subplot(1, 2, 2)
+            plt.scatter(dis_cpu, col_ps_cpu, alpha=0.5, s=10)
+            plt.title("Cell-specific Dropouts (Smoothed)")
+            plt.xlabel("Observed")
+            plt.ylabel("Expected")
+            lims = [min(plt.xlim()[0], plt.ylim()[0]), max(plt.xlim()[1], plt.ylim()[1])]
+            plt.plot(lims, lims, 'r-', alpha=0.75, zorder=0, label="y=x line")
+            plt.grid(True); plt.legend()
+            plt.tight_layout()
+            if plot_filename:
+                plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
+                print(f"STATUS: Diagnostic plot saved to '{plot_filename}'")
+            plt.show()
+            plt.close()
+
+        gene_error = np.sum((djs_cpu - row_ps_cpu)**2)
+        cell_error = np.sum((dis_cpu - col_ps_cpu)**2)
+        end_time = time.perf_counter()
+        print(f"Total time: {end_time - start_time:.2f} seconds.\n")
+        return {
+            'gene_error': gene_error,
+            'cell_error': cell_error,
+            'rowPs': pd.Series(row_ps_cpu, index=fit['vals']['tjs'].index if isinstance(fit['vals']['tjs'], pd.Series) else None),
+            'colPs': pd.Series(col_ps_cpu, index=fit['vals']['tis'].index if isinstance(fit['vals']['tis'], pd.Series) else None)
+        }
+
+    raise ValueError("NBumiCheckFitFS called with unsupported arguments")
+
+def _NBumiCompareModels_counts(counts, size_factor=None):
+    """Compare different normalization models (in-memory counts path)."""
     if size_factor is None:
         col_sums = np.sum(counts, axis=0)
         size_factor = col_sums / np.median(col_sums)
-    
     if np.max(counts) < np.max(size_factor):
         raise ValueError("Error: size factors are too large")
-    
-    # Normalize counts
     if isinstance(counts, pd.DataFrame):
         norm = counts.div(size_factor, axis=1)
     else:
         norm = counts / size_factor[np.newaxis, :]
-    
     norm = NBumiConvertToInteger(norm)
-    
-    # Fit models
     fit_adjust = NBumiFitModel(counts)
     fit_basic = NBumiFitBasicModel(norm)
-    
-    check_adjust = NBumiCheckFitFS(counts, fit_adjust, suppress_plot=True)
-    check_basic = NBumiCheckFitFS(norm, fit_basic, suppress_plot=True)
-    
+    check_adjust = _NBumiCheckFitFS_counts(counts, fit_adjust, suppress_plot=True)
+    check_basic = _NBumiCheckFitFS_counts(norm, fit_basic, suppress_plot=True)
     nc = fit_adjust['vals']['nc']
-    
-    # Plotting
     plt.figure(figsize=(10, 6))
     xes = np.log10(fit_adjust['vals']['tjs'] / nc)
-    
     plt.scatter(xes, fit_adjust['vals']['djs'] / nc, c='black', s=20, alpha=0.7, label='Observed')
     plt.scatter(xes, check_adjust['rowPs'] / nc, c='goldenrod', s=10, alpha=0.7, label='Depth-Adjusted')
     plt.scatter(xes, check_basic['rowPs'] / nc, c='purple', s=10, alpha=0.7, label='Basic')
-    
     plt.xscale('log')
     plt.xlabel('Expression')
     plt.ylabel('Dropout Rate')
     plt.legend()
-    
     err_adj = np.sum(np.abs(check_adjust['rowPs'] / nc - fit_adjust['vals']['djs'] / nc))
     err_bas = np.sum(np.abs(check_basic['rowPs'] / nc - fit_adjust['vals']['djs'] / nc))
-    
     plt.text(0.02, 0.98, f'Depth-Adjusted Error: {err_adj:.2f}\nBasic Error: {err_bas:.2f}', 
              transform=plt.gca().transAxes, verticalalignment='top', 
              bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-    
     plt.show()
-    
     out = {'Depth-Adjusted': err_adj, 'Basic': err_bas}
     return {
         'errors': out,
         'basic_fit': fit_basic,
         'adjusted_fit': fit_adjust
     }
+
+def NBumiCompareModels(*args, **kwargs):
+    """
+    Compare models.
+    - If called as (counts, size_factor=None), uses in-memory path.
+    - If called as (raw_filename: str, cleaned_filename: str, stats: dict, fit_adjust: dict,
+      chunk_size=5000, suppress_plot=False, plot_filename=None), runs an optimized file-based pipeline.
+    """
+    # In-memory path
+    if len(args) >= 1 and not isinstance(args[0], str):
+        counts = args[0]
+        size_factor = kwargs.get('size_factor', None)
+        return _NBumiCompareModels_counts(counts, size_factor=size_factor)
+
+    # File-based optimized pipeline
+    if len(args) >= 4 and all(isinstance(args[i], str) for i in (0, 1)) and isinstance(args[2], dict) and isinstance(args[3], dict):
+        raw_filename = args[0]
+        cleaned_filename = args[1]
+        stats = args[2]
+        fit_adjust = args[3]
+        chunk_size = kwargs.get('chunk_size', 5000)
+        suppress_plot = kwargs.get('suppress_plot', False)
+        plot_filename = kwargs.get('plot_filename', None)
+
+        pipeline_start_time = time.time()
+        print(f"FUNCTION: NBumiCompareModels() | Comparing models for {cleaned_filename}")
+
+        # Phase 1: Optimized Normalization
+        print("Phase [1/4]: Creating temporary 'basic' normalized data file...")
+        basic_norm_filename = cleaned_filename.replace('.h5ad', '_basic_norm.h5ad')
+        adata_meta = anndata.read_h5ad(cleaned_filename, backed='r')
+        nc, ng = adata_meta.shape
+        obs_df = adata_meta.obs.copy()
+        var_df = adata_meta.var.copy()
+        cell_sums = stats['tis'].values if isinstance(stats['tis'], pd.Series) else stats['tis']
+        median_sum = np.median(cell_sums[cell_sums > 0])
+        size_factors = np.ones_like(cell_sums, dtype=np.float32)
+        non_zero_mask = cell_sums > 0
+        size_factors[non_zero_mask] = cell_sums[non_zero_mask] / median_sum
+        adata_out = anndata.AnnData(obs=obs_df, var=var_df)
+        adata_out.write_h5ad(basic_norm_filename, compression="gzip")
+        with h5py.File(basic_norm_filename, 'a') as f_out:
+            if 'X' in f_out:
+                del f_out['X']
+            x_group_out = f_out.create_group('X')
+            x_group_out.attrs['encoding-type'] = 'csr_matrix'
+            x_group_out.attrs['encoding-version'] = '0.1.0'
+            x_group_out.attrs['shape'] = np.array([nc, ng], dtype='int64')
+            out_data = x_group_out.create_dataset('data', shape=(0,), maxshape=(None,), dtype='float32')
+            out_indices = x_group_out.create_dataset('indices', shape=(0,), maxshape=(None,), dtype='int32')
+            out_indptr = x_group_out.create_dataset('indptr', shape=(nc + 1,), dtype='int64')
+            out_indptr[0] = 0
+            current_nnz = 0
+            with h5py.File(cleaned_filename, 'r') as f_in:
+                h5_indptr = f_in['X']['indptr']
+                h5_data = f_in['X']['data']
+                h5_indices = f_in['X']['indices']
+                for i in range(0, nc, chunk_size):
+                    end_row = min(i + chunk_size, nc)
+                    print(f"Phase [1/4]: Normalizing: {end_row} of {nc} cells.", end='\r')
+                    start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
+                    if start_idx == end_idx:
+                        out_indptr[i + 1 : end_row + 1] = current_nnz
+                        continue
+                    data_slice = h5_data[start_idx:end_idx]
+                    indices_slice = h5_indices[start_idx:end_idx]
+                    indptr_slice = h5_indptr[i:end_row + 1] - start_idx
+                    data_gpu = cupy.asarray(data_slice.copy(), dtype=cupy.float32)
+                    indptr_gpu = cupy.asarray(indptr_slice.copy())
+                    nnz_in_chunk = indptr_gpu[-1].item()
+                    cell_boundary_markers = cupy.zeros(nnz_in_chunk, dtype=cupy.int32)
+                    if len(indptr_gpu) > 1:
+                        cell_boundary_markers[indptr_gpu[:-1]] = 1
+                    row_indices = cupy.cumsum(cell_boundary_markers, axis=0) - 1
+                    size_factors_for_chunk = cupy.asarray(size_factors[i:end_row])
+                    data_gpu /= size_factors_for_chunk[row_indices]
+                    data_cpu = np.round(data_gpu.get())
+                    num_cells_in_chunk = end_row - i
+                    chunk_sp = sp_csr_matrix((data_cpu, indices_slice, indptr_slice), 
+                                             shape=(num_cells_in_chunk, ng))
+                    nnz_chunk = chunk_sp.nnz
+                    out_data.resize(current_nnz + nnz_chunk, axis=0)
+                    out_data[current_nnz:] = chunk_sp.data
+                    out_indices.resize(current_nnz + nnz_chunk, axis=0)
+                    out_indices[current_nnz:] = chunk_sp.indices
+                    new_indptr_list = chunk_sp.indptr[1:].astype(np.int64) + current_nnz
+                    out_indptr[i + 1 : end_row + 1] = new_indptr_list
+                    current_nnz += nnz_chunk
+                    del data_gpu, row_indices, size_factors_for_chunk, indptr_gpu
+                    cupy.get_default_memory_pool().free_all_blocks()
+        print(f"Phase [1/4]: COMPLETE{' '*50}")
+
+        # Phase 2: Fit Basic Model on normalized data
+        print("Phase [2/4]: Fitting Basic Model on normalized data...")
+        stats_basic = hidden_calc_vals(basic_norm_filename, chunk_size=chunk_size)
+        fit_basic = NBumiFitBasicModel(basic_norm_filename, stats_basic, chunk_size=chunk_size)
+        print("Phase [2/4]: COMPLETE")
+
+        # Phase 3: Evaluate fits of both models on original data
+        print("Phase [3/4]: Evaluating fits of both models on ORIGINAL data...")
+        check_adjust = NBumiCheckFitFS(cleaned_filename, fit_adjust, suppress_plot=True, chunk_size=chunk_size)
+        fit_basic_for_eval = {
+            'sizes': fit_basic['sizes'],
+            'vals': stats,
+            'var_obs': fit_basic['var_obs']
+        }
+        check_basic = NBumiCheckFitFS(cleaned_filename, fit_basic_for_eval, suppress_plot=True, chunk_size=chunk_size)
+        print("Phase [3/4]: COMPLETE")
+
+        # Phase 4: Final comparison
+        print("Phase [4/4]: Generating final comparison...")
+        nc_data = stats['nc']
+        mean_expr = stats['tjs'] / nc_data
+        observed_dropout = stats['djs'] / nc_data
+        adj_dropout_fit = check_adjust['rowPs'] / nc_data
+        bas_dropout_fit = check_basic['rowPs'] / nc_data
+        err_adj = np.sum(np.abs(adj_dropout_fit - observed_dropout))
+        err_bas = np.sum(np.abs(bas_dropout_fit - observed_dropout))
+        comparison_df = pd.DataFrame({
+            'mean_expr': mean_expr,
+            'observed': observed_dropout,
+            'adj_fit': adj_dropout_fit,
+            'bas_fit': bas_dropout_fit
+        })
+        plt.figure(figsize=(10, 6))
+        sorted_idx = np.argsort(mean_expr.values)
+        plt.scatter(mean_expr.iloc[sorted_idx], observed_dropout.iloc[sorted_idx], 
+                    c='black', s=3, alpha=0.5, label='Observed')
+        plt.scatter(mean_expr.iloc[sorted_idx], bas_dropout_fit.iloc[sorted_idx], 
+                    c='purple', s=3, alpha=0.6, label=f'Basic Fit (Error: {err_bas:.2f})')
+        plt.scatter(mean_expr.iloc[sorted_idx], adj_dropout_fit.iloc[sorted_idx], 
+                    c='goldenrod', s=3, alpha=0.7, label=f'Depth-Adjusted Fit (Error: {err_adj:.2f})')
+        plt.xscale('log')
+        plt.xlabel("Mean Expression")
+        plt.ylabel("Dropout Rate")
+        plt.title("M3Drop Model Comparison")
+        plt.legend()
+        plt.grid(True, linestyle='--', alpha=0.3)
+        if plot_filename:
+            plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
+            print(f"STATUS: Model comparison plot saved to '{plot_filename}'")
+        if not suppress_plot:
+            plt.show()
+        plt.close()
+        print("Phase [4/4]: COMPLETE")
+
+        pipeline_end_time = time.time()
+        # Explicitly close the file handle
+        adata_meta.file.close()
+        os.remove(basic_norm_filename)
+        print(f"STATUS: Temporary file '{basic_norm_filename}' removed.")
+        print(f"Total time: {pipeline_end_time - pipeline_start_time:.2f} seconds.\n")
+
+        return {
+            'errors': {'Depth-Adjusted': err_adj, 'Basic': err_bas},
+            'comparison_df': comparison_df
+        }
+
+    raise ValueError("NBumiCompareModels called with unsupported arguments")
+
+def NBumiPlotDispVsMean(
+    fit: dict,
+    suppress_plot: bool = False,
+    plot_filename: str = None
+):
+    """
+    Generates a diagnostic plot of the dispersion vs. mean expression.
+    """
+    print("FUNCTION: NBumiPlotDispVsMean()")
+    mean_expression = (fit['vals']['tjs'].values if isinstance(fit['vals']['tjs'], pd.Series) else fit['vals']['tjs']) / fit['vals']['nc']
+    sizes = fit['sizes'].values if isinstance(fit['sizes'], pd.Series) else fit['sizes']
+    coeffs = NBumiFitDispVsMean(fit, suppress_plot=True)
+    intercept, slope = coeffs[0], coeffs[1]
+    log_mean_expr_range = np.linspace(
+        np.log(mean_expression[mean_expression > 0].min()),
+        np.log(mean_expression.max()),
+        100
+    )
+    log_fitted_sizes = intercept + slope * log_mean_expr_range
+    fitted_sizes = np.exp(log_fitted_sizes)
+    plt.figure(figsize=(8, 6))
+    plt.scatter(mean_expression, sizes, label='Observed Dispersion', alpha=0.5, s=8)
+    plt.plot(np.exp(log_mean_expr_range), fitted_sizes, color='red', label='Regression Fit', linewidth=2)
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('Mean Expression')
+    plt.ylabel('Dispersion Parameter (Sizes)')
+    plt.title('Dispersion vs. Mean Expression')
+    plt.legend()
+    plt.grid(True, which="both", linestyle='--', alpha=0.6)
+    if plot_filename:
+        plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
+        print(f"STATUS: Diagnostic plot saved to '{plot_filename}'")
+    if not suppress_plot:
+        plt.show()
+    plt.close()
+    print("FUNCTION: NBumiPlotDispVsMean() COMPLETE\n")
 
 def hidden_shift_size(mu_all, size_all, mu_group, coeffs):
     """Shift size parameter based on mean expression change."""
