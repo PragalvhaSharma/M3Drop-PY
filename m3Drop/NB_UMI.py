@@ -9,8 +9,12 @@ import time
 import os
 import h5py
 import anndata
-import cupy
-from cupy.sparse import csr_matrix as cp_csr_matrix
+try:
+    import cupy
+    from cupy.sparse import csr_matrix as cp_csr_matrix
+except Exception:  # pragma: no cover
+    cupy = None
+    cp_csr_matrix = None
 from scipy.sparse import csr_matrix as sp_csr_matrix
 import statsmodels.api as sm
 from scipy.stats import norm
@@ -162,33 +166,56 @@ def hidden_calc_vals(filename_or_counts, chunk_size: int = 5000):
         print(f"Phase [1/3]: COMPLETE")
         tis = np.zeros(nc, dtype='int64')
         cell_non_zeros = np.zeros(nc, dtype='int64')
-        tjs_gpu = cupy.zeros(ng, dtype=cupy.float32)
-        gene_non_zeros_gpu = cupy.zeros(ng, dtype=cupy.int32)
         print("Phase [2/3]: Calculating tis and tjs...")
-        with h5py.File(filename, 'r') as f_in:
-            x_group = f_in['X']
-            h5_indptr = x_group['indptr']
-            h5_data = x_group['data']
-            h5_indices = x_group['indices']
-            for i in range(0, nc, chunk_size):
-                end_row = min(i + chunk_size, nc)
-                print(f"Phase [2/3]: Processing: {end_row} of {nc} cells.", end='\r')
-                start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
-                data_slice = h5_data[start_idx:end_idx]
-                indices_slice = h5_indices[start_idx:end_idx]
-                indptr_slice = h5_indptr[i:end_row+1] - h5_indptr[i]
-                data_gpu = cupy.asarray(data_slice.copy(), dtype=cupy.float32)
-                indices_gpu = cupy.asarray(indices_slice.copy())
-                indptr_gpu = cupy.asarray(indptr_slice.copy())
-                chunk_gpu = cp_csr_matrix((data_gpu, indices_gpu, indptr_gpu), shape=(end_row-i, ng))
-                tis[i:end_row] = chunk_gpu.sum(axis=1).get().flatten()
-                cell_non_zeros_chunk = cupy.diff(indptr_gpu)
-                cell_non_zeros[i:end_row] = cell_non_zeros_chunk.get()
-                cupy.add.at(tjs_gpu, indices_gpu, data_gpu)
-                unique_indices_gpu, counts_gpu = cupy.unique(indices_gpu, return_counts=True)
-                cupy.add.at(gene_non_zeros_gpu, unique_indices_gpu, counts_gpu)
-        tjs = cupy.asnumpy(tjs_gpu)
-        gene_non_zeros = cupy.asnumpy(gene_non_zeros_gpu)
+        if cupy is None:
+            tjs = np.zeros(ng, dtype=np.float64)
+            gene_non_zeros = np.zeros(ng, dtype=np.int64)
+            with h5py.File(filename, 'r') as f_in:
+                x_group = f_in['X']
+                h5_indptr = x_group['indptr']
+                h5_data = x_group['data']
+                h5_indices = x_group['indices']
+                for i in range(0, nc, chunk_size):
+                    end_row = min(i + chunk_size, nc)
+                    print(f"Phase [2/3]: Processing: {end_row} of {nc} cells.", end='\r')
+                    start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
+                    if start_idx == end_idx:
+                        continue
+                    data_slice = h5_data[start_idx:end_idx]
+                    indices_slice = h5_indices[start_idx:end_idx]
+                    indptr_slice = h5_indptr[i:end_row+1] - h5_indptr[i]
+                    chunk_cpu = sp_csr_matrix((data_slice[:], indices_slice[:], indptr_slice[:]), shape=(end_row - i, ng))
+                    tis[i:end_row] = np.asarray(chunk_cpu.sum(axis=1)).ravel().astype('int64')
+                    cell_non_zeros[i:end_row] = np.diff(indptr_slice).astype('int64')
+                    tjs += np.asarray(chunk_cpu.sum(axis=0)).ravel()
+                    gene_non_zeros += np.asarray((chunk_cpu > 0).sum(axis=0)).ravel()
+        else:
+            tjs_gpu = cupy.zeros(ng, dtype=cupy.float32)
+            gene_non_zeros_gpu = cupy.zeros(ng, dtype=cupy.int32)
+            with h5py.File(filename, 'r') as f_in:
+                x_group = f_in['X']
+                h5_indptr = x_group['indptr']
+                h5_data = x_group['data']
+                h5_indices = x_group['indices']
+                for i in range(0, nc, chunk_size):
+                    end_row = min(i + chunk_size, nc)
+                    print(f"Phase [2/3]: Processing: {end_row} of {nc} cells.", end='\r')
+                    start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
+                    data_slice = h5_data[start_idx:end_idx]
+                    indices_slice = h5_indices[start_idx:end_idx]
+                    indptr_slice = h5_indptr[i:end_row+1] - h5_indptr[i]
+                    data_gpu = cupy.asarray(data_slice.copy(), dtype=cupy.float32)
+                    indices_gpu = cupy.asarray(indices_slice.copy())
+                    indptr_gpu = cupy.asarray(indptr_slice.copy())
+                    chunk_gpu = cp_csr_matrix((data_gpu, indices_gpu, indptr_gpu), shape=(end_row-i, ng))
+                    tis[i:end_row] = chunk_gpu.sum(axis=1).get().flatten()
+                    cell_non_zeros_chunk = cupy.diff(indptr_gpu)
+                    cell_non_zeros[i:end_row] = cell_non_zeros_chunk.get()
+                    cupy.add.at(tjs_gpu, indices_gpu, data_gpu)
+                    unique_indices_gpu, counts_gpu = cupy.unique(indices_gpu, return_counts=True)
+                    cupy.add.at(gene_non_zeros_gpu, unique_indices_gpu, counts_gpu)
+            tjs = cupy.asnumpy(tjs_gpu)
+            gene_non_zeros = cupy.asnumpy(gene_non_zeros_gpu)
         print(f"Phase [2/3]: COMPLETE{' ' * 50}")
         print("Phase [3/3]: Calculating dis, djs, and total...")
         dis = ng - cell_non_zeros
@@ -261,64 +288,116 @@ def NBumiFitModel(*args, **kwargs):
         tis = stats['tis'].values if isinstance(stats['tis'], pd.Series) else stats['tis']
         nc, ng = stats['nc'], stats['ng']
         total = stats['total']
-        tjs_gpu = cupy.asarray(tjs, dtype=cupy.float64)
-        tis_gpu = cupy.asarray(tis, dtype=cupy.float64)
-        sum_x_sq_gpu = cupy.zeros(ng, dtype=cupy.float64)
-        sum_2xmu_gpu = cupy.zeros(ng, dtype=cupy.float64)
-        print("Phase [1/3]: Pre-calculating sum of squared expectations...")
-        sum_tis_sq_gpu = cupy.sum(tis_gpu**2)
-        sum_mu_sq_gpu = (tjs_gpu**2 / total**2) * sum_tis_sq_gpu
-        print("Phase [1/3]: COMPLETE")
-        print("Phase [2/3]: Calculating variance components from data chunks...")
-        with h5py.File(cleaned_filename, 'r') as f_in:
-            x_group = f_in['X']
-            h5_indptr = x_group['indptr']
-            h5_data = x_group['data']
-            h5_indices = x_group['indices']
-            for i in range(0, nc, chunk_size):
-                end_row = min(i + chunk_size, nc)
-                print(f"Phase [2/3]: Processing: {end_row} of {nc} cells.", end='\r')
-                start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
-                if start_idx == end_idx:
-                    continue
-                data_gpu = cupy.asarray(h5_data[start_idx:end_idx], dtype=cupy.float64)
-                indices_gpu = cupy.asarray(h5_indices[start_idx:end_idx])
-                indptr_gpu = cupy.asarray(h5_indptr[i:end_row+1] - h5_indptr[i])
-                cupy.add.at(sum_x_sq_gpu, indices_gpu, data_gpu**2)
-                nnz_in_chunk = indptr_gpu[-1].item()
-                cell_boundary_markers = cupy.zeros(nnz_in_chunk, dtype=cupy.int32)
-                if len(indptr_gpu) > 1:
-                    cell_boundary_markers[indptr_gpu[:-1]] = 1
-                cell_indices_chunk = cupy.cumsum(cell_boundary_markers, axis=0) - 1
-                cell_indices_gpu = cell_indices_chunk + i
-                tis_per_nz = tis_gpu[cell_indices_gpu]
-                tjs_per_nz = tjs_gpu[indices_gpu]
-                term_vals = 2 * data_gpu * tjs_per_nz * tis_per_nz / total
-                cupy.add.at(sum_2xmu_gpu, indices_gpu, term_vals)
-                del data_gpu, indices_gpu, indptr_gpu, cell_indices_gpu
-                del tis_per_nz, tjs_per_nz, term_vals
-                if i % (chunk_size * 10) == 0:
-                    cupy.get_default_memory_pool().free_all_blocks()
-        print(f"Phase [2/3]: COMPLETE {' ' * 50}")
-        print("Phase [3/3]: Finalizing dispersion and variance calculations...")
-        sum_sq_dev_gpu = sum_x_sq_gpu - sum_2xmu_gpu + sum_mu_sq_gpu
-        var_obs_gpu = sum_sq_dev_gpu / (nc - 1)
-        sizes_gpu = cupy.full(ng, 10000.0)
-        numerator_gpu = (tjs_gpu**2 / total**2) * sum_tis_sq_gpu
-        denominator_gpu = sum_sq_dev_gpu - tjs_gpu
-        stable_mask = denominator_gpu > 1e-6
-        sizes_gpu[stable_mask] = numerator_gpu[stable_mask] / denominator_gpu[stable_mask]
-        sizes_gpu[sizes_gpu <= 0] = 10000.0
-        var_obs_cpu = var_obs_gpu.get()
-        sizes_cpu = sizes_gpu.get()
-        print("Phase [3/3]: COMPLETE")
-        end_time = time.perf_counter()
-        print(f"Total time: {end_time - start_time:.2f} seconds.\n")
-        return {
-            'var_obs': pd.Series(var_obs_cpu, index=stats['tjs'].index if isinstance(stats['tjs'], pd.Series) else None),
-            'sizes': pd.Series(sizes_cpu, index=stats['tjs'].index if isinstance(stats['tjs'], pd.Series) else None),
-            'vals': stats
-        }
+        if cupy is None:
+            print("Phase [1/3]: Pre-calculating sum of squared expectations...")
+            sum_tis_sq = np.sum(tis**2)
+            sum_mu_sq = (tjs**2 / total**2) * sum_tis_sq
+            print("Phase [1/3]: COMPLETE")
+            print("Phase [2/3]: Calculating variance components from data chunks...")
+            sum_x_sq = np.zeros(ng, dtype=np.float64)
+            sum_2xmu = np.zeros(ng, dtype=np.float64)
+            with h5py.File(cleaned_filename, 'r') as f_in:
+                x_group = f_in['X']
+                h5_indptr = x_group['indptr']
+                h5_data = x_group['data']
+                h5_indices = x_group['indices']
+                for i in range(0, nc, chunk_size):
+                    end_row = min(i + chunk_size, nc)
+                    print(f"Phase [2/3]: Processing: {end_row} of {nc} cells.", end='\r')
+                    start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
+                    if start_idx == end_idx:
+                        continue
+                    data_slice = h5_data[start_idx:end_idx]
+                    indices_slice = h5_indices[start_idx:end_idx]
+                    indptr_slice = h5_indptr[i:end_row+1] - h5_indptr[i]
+                    chunk_cpu = sp_csr_matrix((data_slice[:], indices_slice[:], indptr_slice[:]), shape=(end_row - i, ng))
+                    sum_x_sq += np.asarray(chunk_cpu.power(2).sum(axis=0)).ravel()
+                    nnz_in_chunk = indptr_slice[-1].item()
+                    cell_boundary_markers = np.zeros(nnz_in_chunk, dtype=np.int32)
+                    if len(indptr_slice) > 1:
+                        cell_boundary_markers[indptr_slice[:-1]] = 1
+                    row_indices = np.cumsum(cell_boundary_markers) - 1 + i
+                    tis_per_nz = tis[row_indices]
+                    tjs_per_nz = tjs[indices_slice]
+                    term_vals = 2.0 * data_slice[:] * tjs_per_nz * tis_per_nz / total
+                    np.add.at(sum_2xmu, indices_slice, term_vals)
+            print(f"Phase [2/3]: COMPLETE {' ' * 50}")
+            print("Phase [3/3]: Finalizing dispersion and variance calculations...")
+            sum_sq_dev = sum_x_sq - sum_2xmu + sum_mu_sq
+            var_obs = sum_sq_dev / (nc - 1)
+            sizes = np.full(ng, 10000.0)
+            numerator = (tjs**2 / total**2) * sum_tis_sq
+            denominator = sum_sq_dev - tjs
+            stable_mask = denominator > 1e-6
+            sizes[stable_mask] = numerator[stable_mask] / denominator[stable_mask]
+            sizes[sizes <= 0] = 10000.0
+            print("Phase [3/3]: COMPLETE")
+            end_time = time.perf_counter()
+            print(f"Total time: {end_time - start_time:.2f} seconds.\n")
+            return {
+                'var_obs': pd.Series(var_obs, index=stats['tjs'].index if isinstance(stats['tjs'], pd.Series) else None),
+                'sizes': pd.Series(sizes, index=stats['tjs'].index if isinstance(stats['tjs'], pd.Series) else None),
+                'vals': stats
+            }
+        else:
+            tjs_gpu = cupy.asarray(tjs, dtype=cupy.float64)
+            tis_gpu = cupy.asarray(tis, dtype=cupy.float64)
+            sum_x_sq_gpu = cupy.zeros(ng, dtype=cupy.float64)
+            sum_2xmu_gpu = cupy.zeros(ng, dtype=cupy.float64)
+            print("Phase [1/3]: Pre-calculating sum of squared expectations...")
+            sum_tis_sq_gpu = cupy.sum(tis_gpu**2)
+            sum_mu_sq_gpu = (tjs_gpu**2 / total**2) * sum_tis_sq_gpu
+            print("Phase [1/3]: COMPLETE")
+            print("Phase [2/3]: Calculating variance components from data chunks...")
+            with h5py.File(cleaned_filename, 'r') as f_in:
+                x_group = f_in['X']
+                h5_indptr = x_group['indptr']
+                h5_data = x_group['data']
+                h5_indices = x_group['indices']
+                for i in range(0, nc, chunk_size):
+                    end_row = min(i + chunk_size, nc)
+                    print(f"Phase [2/3]: Processing: {end_row} of {nc} cells.", end='\r')
+                    start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
+                    if start_idx == end_idx:
+                        continue
+                    data_gpu = cupy.asarray(h5_data[start_idx:end_idx], dtype=cupy.float64)
+                    indices_gpu = cupy.asarray(h5_indices[start_idx:end_idx])
+                    indptr_gpu = cupy.asarray(h5_indptr[i:end_row+1] - h5_indptr[i])
+                    cupy.add.at(sum_x_sq_gpu, indices_gpu, data_gpu**2)
+                    nnz_in_chunk = indptr_gpu[-1].item()
+                    cell_boundary_markers = cupy.zeros(nnz_in_chunk, dtype=cupy.int32)
+                    if len(indptr_gpu) > 1:
+                        cell_boundary_markers[indptr_gpu[:-1]] = 1
+                    cell_indices_chunk = cupy.cumsum(cell_boundary_markers, axis=0) - 1
+                    cell_indices_gpu = cell_indices_chunk + i
+                    tis_per_nz = tis_gpu[cell_indices_gpu]
+                    tjs_per_nz = tjs_gpu[indices_gpu]
+                    term_vals = 2 * data_gpu * tjs_per_nz * tis_per_nz / total
+                    cupy.add.at(sum_2xmu_gpu, indices_gpu, term_vals)
+                    del data_gpu, indices_gpu, indptr_gpu, cell_indices_gpu
+                    del tis_per_nz, tjs_per_nz, term_vals
+                    if i % (chunk_size * 10) == 0:
+                        cupy.get_default_memory_pool().free_all_blocks()
+            print(f"Phase [2/3]: COMPLETE {' ' * 50}")
+            print("Phase [3/3]: Finalizing dispersion and variance calculations...")
+            sum_sq_dev_gpu = sum_x_sq_gpu - sum_2xmu_gpu + sum_mu_sq_gpu
+            var_obs_gpu = sum_sq_dev_gpu / (nc - 1)
+            sizes_gpu = cupy.full(ng, 10000.0)
+            numerator_gpu = (tjs_gpu**2 / total**2) * sum_tis_sq_gpu
+            denominator_gpu = sum_sq_dev_gpu - tjs_gpu
+            stable_mask = denominator_gpu > 1e-6
+            sizes_gpu[stable_mask] = numerator_gpu[stable_mask] / denominator_gpu[stable_mask]
+            sizes_gpu[sizes_gpu <= 0] = 10000.0
+            var_obs_cpu = var_obs_gpu.get()
+            sizes_cpu = sizes_gpu.get()
+            print("Phase [3/3]: COMPLETE")
+            end_time = time.perf_counter()
+            print(f"Total time: {end_time - start_time:.2f} seconds.\n")
+            return {
+                'var_obs': pd.Series(var_obs_cpu, index=stats['tjs'].index if isinstance(stats['tjs'], pd.Series) else None),
+                'sizes': pd.Series(sizes_cpu, index=stats['tjs'].index if isinstance(stats['tjs'], pd.Series) else None),
+                'vals': stats
+            }
     raise ValueError("NBumiFitModel called with unsupported arguments")
 
 def _NBumiFitBasicModel_counts(counts):
@@ -951,29 +1030,44 @@ def NBumiFeatureSelectionCombinedDrop(
     total = vals['total']
     nc = vals['nc']
     ng = vals['ng']
-    tjs_gpu = cupy.asarray(tjs_vals)
-    tis_gpu = cupy.asarray(tis_vals)
     mean_expression_cpu = tjs_vals / nc
     with np.errstate(divide='ignore'):
         exp_size_cpu = np.exp(coeffs[0] + coeffs[1] * np.log(mean_expression_cpu))
-    exp_size_gpu = cupy.asarray(exp_size_cpu)
-    p_sum_gpu = cupy.zeros(ng, dtype=cupy.float64)
-    p_var_sum_gpu = cupy.zeros(ng, dtype=cupy.float64)
     print("Phase [1/3]: COMPLETE")
     print("Phase [2/3]: Calculating expected dropout sums from data chunks...")
-    for i in range(0, nc, chunk_size):
-        end_col = min(i + chunk_size, nc)
-        print(f"Phase [2/3]: Processing: {end_col} of {nc} cells.", end='\r')
-        tis_chunk_gpu = tis_gpu[i:end_col]
-        mu_chunk_gpu = tjs_gpu[:, cupy.newaxis] * tis_chunk_gpu[cupy.newaxis, :] / total
-        p_is_chunk_gpu = cupy.power(1 + mu_chunk_gpu / exp_size_gpu[:, cupy.newaxis], -exp_size_gpu[:, cupy.newaxis])
-        p_var_is_chunk_gpu = p_is_chunk_gpu * (1 - p_is_chunk_gpu)
-        p_sum_gpu += p_is_chunk_gpu.sum(axis=1)
-        p_var_sum_gpu += p_var_is_chunk_gpu.sum(axis=1)
+    if cupy is None:
+        # CPU fallback with smaller chunks to control memory
+        cpu_chunk = min(chunk_size, 1024)
+        p_sum_cpu = np.zeros(ng, dtype=np.float64)
+        p_var_sum_cpu = np.zeros(ng, dtype=np.float64)
+        for i in range(0, nc, cpu_chunk):
+            end_col = min(i + cpu_chunk, nc)
+            print(f"Phase [2/3]: Processing: {end_col} of {nc} cells.", end='\r')
+            tis_chunk = tis_vals[i:end_col]
+            mu_chunk = (tjs_vals[:, np.newaxis] * tis_chunk[np.newaxis, :]) / total
+            p_is_chunk = np.power(1 + mu_chunk / exp_size_cpu[:, np.newaxis], -exp_size_cpu[:, np.newaxis])
+            p_var_is_chunk = p_is_chunk * (1 - p_is_chunk)
+            p_sum_cpu += p_is_chunk.sum(axis=1)
+            p_var_sum_cpu += p_var_is_chunk.sum(axis=1)
+    else:
+        tjs_gpu = cupy.asarray(tjs_vals)
+        tis_gpu = cupy.asarray(tis_vals)
+        exp_size_gpu = cupy.asarray(exp_size_cpu)
+        p_sum_gpu = cupy.zeros(ng, dtype=cupy.float64)
+        p_var_sum_gpu = cupy.zeros(ng, dtype=cupy.float64)
+        for i in range(0, nc, chunk_size):
+            end_col = min(i + chunk_size, nc)
+            print(f"Phase [2/3]: Processing: {end_col} of {nc} cells.", end='\r')
+            tis_chunk_gpu = tis_gpu[i:end_col]
+            mu_chunk_gpu = tjs_gpu[:, cupy.newaxis] * tis_chunk_gpu[cupy.newaxis, :] / total
+            p_is_chunk_gpu = cupy.power(1 + mu_chunk_gpu / exp_size_gpu[:, cupy.newaxis], -exp_size_gpu[:, cupy.newaxis])
+            p_var_is_chunk_gpu = p_is_chunk_gpu * (1 - p_is_chunk_gpu)
+            p_sum_gpu += p_is_chunk_gpu.sum(axis=1)
+            p_var_sum_gpu += p_var_is_chunk_gpu.sum(axis=1)
+        p_sum_cpu = p_sum_gpu.get()
+        p_var_sum_cpu = p_var_sum_gpu.get()
     print(f"Phase [2/3]: COMPLETE {' ' * 50}")
     print("Phase [3/3]: Performing statistical test and adjusting p-values...")
-    p_sum_cpu = p_sum_gpu.get()
-    p_var_sum_cpu = p_var_sum_gpu.get()
     droprate_exp = p_sum_cpu / nc
     droprate_exp_err = np.sqrt(p_var_sum_cpu / (nc**2))
     djs_vals = vals['djs'].values if isinstance(vals['djs'], pd.Series) else vals['djs']
