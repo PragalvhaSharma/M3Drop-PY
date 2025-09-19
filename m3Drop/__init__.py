@@ -18,6 +18,12 @@ from .Normalization import (
     NBumiPearsonResidualsApprox,
 )
 
+# GPU-accelerated out-of-core residuals (optional dependency)
+from .NormalizationGPU import (
+    NBumiPearsonResiduals_h5ad_gpu,
+    NBumiPearsonResidualsApprox_h5ad_gpu,
+)
+
 # Feature selection and extreme gene identification
 from .Extremes import (
     M3DropFeatureSelection,
@@ -120,6 +126,8 @@ __all__ = [
     'M3DropCleanData',
     'NBumiPearsonResiduals',
     'NBumiPearsonResidualsApprox',
+    'NBumiPearsonResiduals_h5ad_gpu',
+    'NBumiPearsonResidualsApprox_h5ad_gpu',
 
     # Feature selection
     'M3DropFeatureSelection',
