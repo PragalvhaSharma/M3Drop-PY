@@ -105,6 +105,16 @@ from .Simulations_Functions import (
     bg__MakeSimHVar,
 )
 
+# GPU-accelerated sparse simulation and verification (optional dependency)
+from .Simulations_GPU import (
+    MakeSimSparseData,
+    MakeSimSparseDataDE,
+    MakeSimSparseDataHVar,
+    verify_sparse_h5ad,
+    verify_sparse_DE_h5ad,
+    verify_cleaned_DE_h5ad,
+)
+
 # Import scanpy integration module
 from .scanpy import (
     nbumi_normalize,
@@ -186,6 +196,12 @@ __all__ = [
     'bg__MakeSimDE',
     'bg__MakeSimDVar',
     'bg__MakeSimHVar',
+    'MakeSimSparseData',
+    'MakeSimSparseDataDE',
+    'MakeSimSparseDataHVar',
+    'verify_sparse_h5ad',
+    'verify_sparse_DE_h5ad',
+    'verify_cleaned_DE_h5ad',
     
     # Scanpy integration
     'nbumi_normalize',
