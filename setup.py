@@ -5,9 +5,9 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name="M3Drop",
-    version="0.1.4",
-    author="Tallulah Andrews, Pragalvha Sharma",
-    author_email="tandrew6@uwo.ca, pragalvhasharma@gmail.com",
+    version="0.1.5",
+    author="Tallulah Andrews, Pragalvha Sharma, Anthony Son",
+    author_email="tandrew6@uwo.ca, pragalvhasharma@gmail.com, json59@uwo.ca",
     description="A Python implementation of the M3Drop single-cell RNA-seq analysis tool.",
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -17,12 +17,16 @@ setuptools.setup(
     classifiers=[
         "Programming Language :: Python :: 3",
         "Operating System :: OS Independent",
+        "License :: OSI Approved :: MIT License",
+        "Intended Audience :: Science/Research",
+        "Topic :: Scientific/Engineering :: Bio-Informatics",
     ],
-    python_requires='>=3.6',
+    python_requires='>=3.8',
     install_requires=[
         "anndata==0.10.9",
         "matplotlib==3.9.4",
         "matplotlib-venn==1.1.2",
+        "memory_profiler==0.61.0",
         "numpy==1.26.4",
         "pandas==2.2.2",
         "scanpy==1.10.3",
@@ -31,4 +35,8 @@ setuptools.setup(
         "seaborn==0.13.2",
         "statsmodels==0.14.4",
     ],
+    include_package_data=True,
+    package_data={
+        "": ["*.md", "*.txt"],
+    },
 )
