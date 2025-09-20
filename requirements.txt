@@ -1,6 +1,7 @@
 anndata==0.10.9
 matplotlib==3.9.4
 matplotlib-venn==1.1.2
+memory_profiler==0.61.0
 numpy==1.26.4
 pandas==2.2.2
 scanpy==1.10.3
