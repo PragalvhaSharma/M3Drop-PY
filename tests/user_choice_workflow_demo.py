@@ -38,7 +38,7 @@ from m3Drop.DANB_HVG import NBumiHVG
 
 def load_reference_data():
     """Load the reference dataset"""
-    h5ad_file = "/Users/pragalvhasharma/Downloads/PragGOToDocuments/Blanc/school/mcpServers/m3DropUpdates/m3DropNew/data/GSM8267529_G-P28_raw_matrix.h5ad"
+    h5ad_file = "data/GSM8267529_G-P28_raw_matrix.h5ad"
     
     try:
         adata = sc.read_h5ad(h5ad_file)

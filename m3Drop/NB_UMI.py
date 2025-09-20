@@ -449,12 +449,18 @@ def NBumiFitBasicModel(*args, **kwargs):
         start_time = time.perf_counter()
         print(f"FUNCTION: NBumiFitBasicModel() | FILE: {cleaned_filename}")
 
-        # Phase 1: Initialization
-        print("Phase [1/2]: Initializing parameters and arrays on GPU...")
+        # Phase 1: Initialization (CPU/GPU)
         tjs = stats['tjs'].values if isinstance(stats['tjs'], pd.Series) else stats['tjs']
         nc, ng = stats['nc'], stats['ng']
-        tjs_gpu = cupy.asarray(tjs, dtype=cupy.float64)
-        sum_x_sq_gpu = cupy.zeros(ng, dtype=cupy.float64)
+        use_gpu = cupy is not None
+        if use_gpu:
+            print("Phase [1/2]: Initializing parameters and arrays on GPU...")
+            tjs_gpu = cupy.asarray(tjs, dtype=cupy.float64)
+            sum_x_sq_gpu = cupy.zeros(ng, dtype=cupy.float64)
+        else:
+            print("Phase [1/2]: Initializing parameters and arrays on CPU...")
+            tjs_cpu = np.asarray(tjs, dtype=np.float64)
+            sum_x_sq_cpu = np.zeros(ng, dtype=np.float64)
         print("Phase [1/2]: COMPLETE")
 
         # Phase 2: Calculate Variance from Data Chunks
@@ -479,39 +485,62 @@ def NBumiFitBasicModel(*args, **kwargs):
                         sub_end = min(sub_start + max_elements, end_idx)
                         data_slice = h5_data[sub_start:sub_end]
                         indices_slice = h5_indices[sub_start:sub_end]
+                        if use_gpu:
+                            data_gpu = cupy.asarray(data_slice, dtype=cupy.float64)
+                            indices_gpu = cupy.asarray(indices_slice)
+                            cupy.add.at(sum_x_sq_gpu, indices_gpu, data_gpu**2)
+                            del data_gpu, indices_gpu
+                            cupy.get_default_memory_pool().free_all_blocks()
+                        else:
+                            # CPU accumulation
+                            np.add.at(sum_x_sq_cpu, indices_slice[:], (data_slice[:].astype(np.float64))**2)
+                else:
+                    data_slice = h5_data[start_idx:end_idx]
+                    indices_slice = h5_indices[start_idx:end_idx]
+                    if use_gpu:
                         data_gpu = cupy.asarray(data_slice, dtype=cupy.float64)
                         indices_gpu = cupy.asarray(indices_slice)
                         cupy.add.at(sum_x_sq_gpu, indices_gpu, data_gpu**2)
                         del data_gpu, indices_gpu
                         cupy.get_default_memory_pool().free_all_blocks()
-                else:
-                    data_slice = h5_data[start_idx:end_idx]
-                    indices_slice = h5_indices[start_idx:end_idx]
-                    data_gpu = cupy.asarray(data_slice, dtype=cupy.float64)
-                    indices_gpu = cupy.asarray(indices_slice)
-                    cupy.add.at(sum_x_sq_gpu, indices_gpu, data_gpu**2)
-                    del data_gpu, indices_gpu
-                    cupy.get_default_memory_pool().free_all_blocks()
+                    else:
+                        np.add.at(sum_x_sq_cpu, indices_slice[:], (data_slice[:].astype(np.float64))**2)
 
         print(f"Phase [2/2]: COMPLETE                                       ")
 
-        # Final calculations on GPU
+        # Final calculations
         if is_logged:
             raise NotImplementedError("Logged data variance calculation is not implemented for out-of-core.")
         else:
-            mean_x_sq_gpu = sum_x_sq_gpu / nc
-            mean_mu_gpu = tjs_gpu / nc
-            my_rowvar_gpu = mean_x_sq_gpu - mean_mu_gpu**2
-            size_gpu = mean_mu_gpu**2 / (my_rowvar_gpu - mean_mu_gpu)
+            if use_gpu:
+                mean_x_sq_gpu = sum_x_sq_gpu / nc
+                mean_mu_gpu = tjs_gpu / nc
+                my_rowvar_gpu = mean_x_sq_gpu - mean_mu_gpu**2
+                size_gpu = mean_mu_gpu**2 / (my_rowvar_gpu - mean_mu_gpu)
 
-        max_size_val = cupy.nanmax(size_gpu) * 10
-        if cupy.isnan(max_size_val):
-            max_size_val = 1000
-        size_gpu[cupy.isnan(size_gpu) | (size_gpu <= 0)] = max_size_val
-        size_gpu[size_gpu < 1e-10] = 1e-10
+                max_size_val = cupy.nanmax(size_gpu) * 10
+                if cupy.isnan(max_size_val):
+                    max_size_val = 1000
+                size_gpu[cupy.isnan(size_gpu) | (size_gpu <= 0)] = max_size_val
+                size_gpu[size_gpu < 1e-10] = 1e-10
 
-        my_rowvar_cpu = my_rowvar_gpu.get()
-        sizes_cpu = size_gpu.get()
+                my_rowvar_cpu = my_rowvar_gpu.get()
+                sizes_cpu = size_gpu.get()
+            else:
+                mean_x_sq_cpu = sum_x_sq_cpu / nc
+                mean_mu_cpu = tjs_cpu / nc
+                my_rowvar_cpu = mean_x_sq_cpu - mean_mu_cpu**2
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    size_cpu = (mean_mu_cpu**2) / (my_rowvar_cpu - mean_mu_cpu)
+                # Fix invalid or non-positive sizes
+                with np.errstate(invalid='ignore'):
+                    max_size_val = np.nanmax(size_cpu) * 10 if np.isfinite(np.nanmax(size_cpu)) else 1000.0
+                if not np.isfinite(max_size_val) or max_size_val <= 0:
+                    max_size_val = 1000.0
+                invalid_mask = ~np.isfinite(size_cpu) | (size_cpu <= 0)
+                size_cpu[invalid_mask] = max_size_val
+                size_cpu[size_cpu < 1e-10] = 1e-10
+                sizes_cpu = size_cpu
 
         end_time = time.perf_counter()
         print(f"Total time: {end_time - start_time:.2f} seconds.\n")
@@ -651,48 +680,78 @@ def NBumiCheckFitFS(*args, **kwargs):
         start_time = time.perf_counter()
         print(f"FUNCTION: NBumiCheckFitFS() | FILE: {cleaned_filename}")
 
-        # Phase 1: Initialization
-        print("Phase [1/2]: Initializing parameters and arrays on GPU...")
+        # Phase 1: Initialization (CPU/GPU)
         vals = fit['vals']
         size_coeffs = NBumiFitDispVsMean(fit, suppress_plot=True)
-        tjs_gpu = cupy.asarray(vals['tjs'].values if isinstance(vals['tjs'], pd.Series) else vals['tjs'], dtype=cupy.float64)
-        tis_gpu_all = cupy.asarray(vals['tis'].values if isinstance(vals['tis'], pd.Series) else vals['tis'], dtype=cupy.float64)
         total = vals['total']
         nc, ng = vals['nc'], vals['ng']
-        mean_expression_gpu = tjs_gpu / nc
-        log_mean_expression_gpu = cupy.log(mean_expression_gpu)
-        smoothed_size_gpu = cupy.exp(size_coeffs[0] + size_coeffs[1] * log_mean_expression_gpu)
-        row_ps_gpu = cupy.zeros(ng, dtype=cupy.float64)
-        col_ps_gpu = cupy.zeros(nc, dtype=cupy.float64)
+        use_gpu = cupy is not None
+        if use_gpu:
+            print("Phase [1/2]: Initializing parameters and arrays on GPU...")
+            tjs_gpu = cupy.asarray(vals['tjs'].values if isinstance(vals['tjs'], pd.Series) else vals['tjs'], dtype=cupy.float64)
+            tis_gpu_all = cupy.asarray(vals['tis'].values if isinstance(vals['tis'], pd.Series) else vals['tis'], dtype=cupy.float64)
+            mean_expression_gpu = tjs_gpu / nc
+            log_mean_expression_gpu = cupy.log(mean_expression_gpu)
+            smoothed_size_gpu = cupy.exp(size_coeffs[0] + size_coeffs[1] * log_mean_expression_gpu)
+            row_ps_gpu = cupy.zeros(ng, dtype=cupy.float64)
+            col_ps_gpu = cupy.zeros(nc, dtype=cupy.float64)
+        else:
+            print("Phase [1/2]: Initializing parameters and arrays on CPU...")
+            tjs_cpu = np.asarray(vals['tjs'].values if isinstance(vals['tjs'], pd.Series) else vals['tjs'], dtype=np.float64)
+            tis_cpu_all = np.asarray(vals['tis'].values if isinstance(vals['tis'], pd.Series) else vals['tis'], dtype=np.float64)
+            with np.errstate(divide='ignore'):
+                mean_expression_cpu = tjs_cpu / nc
+                safe_mean = np.where(mean_expression_cpu > 0, mean_expression_cpu, np.nanmin(mean_expression_cpu[mean_expression_cpu > 0]))
+                log_mean_expression_cpu = np.log(safe_mean)
+            smoothed_size_cpu = np.exp(size_coeffs[0] + size_coeffs[1] * log_mean_expression_cpu)
+            row_ps_cpu = np.zeros(ng, dtype=np.float64)
+            col_ps_cpu = np.zeros(nc, dtype=np.float64)
         print("Phase [1/2]: COMPLETE")
 
         # Phase 2: Calculate Expected Dropouts
         print("Phase [2/2]: Calculating expected dropouts from data chunks...")
-        mempool = cupy.get_default_memory_pool()
-        free_mem_mb = cupy.cuda.Device().mem_info[0] / (1024**2)
-        bytes_per_cell = ng * 8 * 2
-        optimal_chunk = min(kwargs.get('chunk_size', 5000), int(free_mem_mb * 0.4 * 1024**2 / bytes_per_cell))
-        optimal_chunk = max(100, optimal_chunk)
-        print(f"  Using adaptive chunk size: {optimal_chunk} (original: {chunk_size})")
+        if use_gpu:
+            mempool = cupy.get_default_memory_pool()
+            free_mem_mb = cupy.cuda.Device().mem_info[0] / (1024**2)
+            bytes_per_cell = ng * 8 * 2
+            optimal_chunk = min(kwargs.get('chunk_size', 5000), int(free_mem_mb * 0.4 * 1024**2 / bytes_per_cell))
+            optimal_chunk = max(100, optimal_chunk)
+            print(f"  Using adaptive chunk size: {optimal_chunk} (original: {chunk_size})")
 
-        for i in range(0, nc, optimal_chunk):
-            end_col = min(i + optimal_chunk, nc)
-            print(f"Phase [2/2]: Processing: {end_col} of {nc} cells.", end='\r')
-            tis_chunk_gpu = tis_gpu_all[i:end_col]
-            mu_chunk_gpu = tjs_gpu[:, cupy.newaxis] * tis_chunk_gpu[cupy.newaxis, :] / total
-            base = 1 + mu_chunk_gpu / smoothed_size_gpu[:, cupy.newaxis]
-            p_is_chunk_gpu = cupy.power(base, -smoothed_size_gpu[:, cupy.newaxis])
-            p_is_chunk_gpu = cupy.nan_to_num(p_is_chunk_gpu, nan=0.0, posinf=1.0, neginf=0.0)
-            row_ps_gpu += p_is_chunk_gpu.sum(axis=1)
-            col_ps_gpu[i:end_col] = p_is_chunk_gpu.sum(axis=0)
-            del mu_chunk_gpu, p_is_chunk_gpu, base, tis_chunk_gpu
-            if (i // optimal_chunk) % 10 == 0:
-                mempool.free_all_blocks()
+            for i in range(0, nc, optimal_chunk):
+                end_col = min(i + optimal_chunk, nc)
+                print(f"Phase [2/2]: Processing: {end_col} of {nc} cells.", end='\r')
+                tis_chunk_gpu = tis_gpu_all[i:end_col]
+                mu_chunk_gpu = tjs_gpu[:, cupy.newaxis] * tis_chunk_gpu[cupy.newaxis, :] / total
+                base = 1 + mu_chunk_gpu / smoothed_size_gpu[:, cupy.newaxis]
+                p_is_chunk_gpu = cupy.power(base, -smoothed_size_gpu[:, cupy.newaxis])
+                p_is_chunk_gpu = cupy.nan_to_num(p_is_chunk_gpu, nan=0.0, posinf=1.0, neginf=0.0)
+                row_ps_gpu += p_is_chunk_gpu.sum(axis=1)
+                col_ps_gpu[i:end_col] = p_is_chunk_gpu.sum(axis=0)
+                del mu_chunk_gpu, p_is_chunk_gpu, base, tis_chunk_gpu
+                if (i // optimal_chunk) % 10 == 0:
+                    mempool.free_all_blocks()
 
-        print(f"Phase [2/2]: COMPLETE{' ' * 50}")
+            print(f"Phase [2/2]: COMPLETE{' ' * 50}")
 
-        row_ps_cpu = row_ps_gpu.get()
-        col_ps_cpu = col_ps_gpu.get()
+            row_ps_cpu = row_ps_gpu.get()
+            col_ps_cpu = col_ps_gpu.get()
+        else:
+            optimal_chunk = kwargs.get('chunk_size', 5000)
+            for i in range(0, nc, optimal_chunk):
+                end_col = min(i + optimal_chunk, nc)
+                print(f"Phase [2/2]: Processing: {end_col} of {nc} cells.", end='\r')
+                tis_chunk = tis_cpu_all[i:end_col]
+                mu_chunk = (tjs_cpu[:, np.newaxis] * tis_chunk[np.newaxis, :]) / total
+                base = 1.0 + mu_chunk / smoothed_size_cpu[:, np.newaxis]
+                with np.errstate(over='ignore', invalid='ignore'):
+                    p_is_chunk = np.power(base, -smoothed_size_cpu[:, np.newaxis])
+                p_is_chunk = np.nan_to_num(p_is_chunk, nan=0.0, posinf=1.0, neginf=0.0)
+                row_ps_cpu += p_is_chunk.sum(axis=1)
+                col_ps_cpu[i:end_col] = p_is_chunk.sum(axis=0)
+                del tis_chunk, mu_chunk, base, p_is_chunk
+
+            print(f"Phase [2/2]: COMPLETE{' ' * 50}")
         djs_cpu = vals['djs'].values if isinstance(vals['djs'], pd.Series) else vals['djs']
         dis_cpu = vals['dis'].values if isinstance(vals['dis'], pd.Series) else vals['dis']
 
@@ -839,19 +898,32 @@ def NBumiCompareModels(*args, **kwargs):
                     data_slice = h5_data[start_idx:end_idx]
                     indices_slice = h5_indices[start_idx:end_idx]
                     indptr_slice = h5_indptr[i:end_row + 1] - start_idx
-                    data_gpu = cupy.asarray(data_slice.copy(), dtype=cupy.float32)
-                    indptr_gpu = cupy.asarray(indptr_slice.copy())
-                    nnz_in_chunk = indptr_gpu[-1].item()
-                    cell_boundary_markers = cupy.zeros(nnz_in_chunk, dtype=cupy.int32)
-                    if len(indptr_gpu) > 1:
-                        cell_boundary_markers[indptr_gpu[:-1]] = 1
-                    row_indices = cupy.cumsum(cell_boundary_markers, axis=0) - 1
-                    size_factors_for_chunk = cupy.asarray(size_factors[i:end_row])
-                    data_gpu /= size_factors_for_chunk[row_indices]
-                    data_cpu = np.round(data_gpu.get())
                     num_cells_in_chunk = end_row - i
-                    chunk_sp = sp_csr_matrix((data_cpu, indices_slice, indptr_slice), 
-                                             shape=(num_cells_in_chunk, ng))
+                    if cupy is None:
+                        # CPU fallback path
+                        chunk_sp = sp_csr_matrix((data_slice[:], indices_slice[:], indptr_slice[:]),
+                                                 shape=(num_cells_in_chunk, ng))
+                        inv_size = 1.0 / np.asarray(size_factors[i:end_row])
+                        # Row-scale by inverse size factors
+                        D = sp.diags(inv_size.astype(np.float32))
+                        chunk_sp = D.dot(chunk_sp)
+                        # Round values to match integer-like normalization used in GPU path
+                        chunk_sp.data = np.round(chunk_sp.data).astype(np.float32)
+                    else:
+                        data_gpu = cupy.asarray(data_slice.copy(), dtype=cupy.float32)
+                        indptr_gpu = cupy.asarray(indptr_slice.copy())
+                        nnz_in_chunk = indptr_gpu[-1].item()
+                        cell_boundary_markers = cupy.zeros(nnz_in_chunk, dtype=cupy.int32)
+                        if len(indptr_gpu) > 1:
+                            cell_boundary_markers[indptr_gpu[:-1]] = 1
+                        row_indices = cupy.cumsum(cell_boundary_markers, axis=0) - 1
+                        size_factors_for_chunk = cupy.asarray(size_factors[i:end_row])
+                        data_gpu /= size_factors_for_chunk[row_indices]
+                        data_cpu = np.round(data_gpu.get())
+                        chunk_sp = sp_csr_matrix((data_cpu, indices_slice, indptr_slice),
+                                                 shape=(num_cells_in_chunk, ng))
+                        del data_gpu, row_indices, size_factors_for_chunk, indptr_gpu
+                        cupy.get_default_memory_pool().free_all_blocks()
                     nnz_chunk = chunk_sp.nnz
                     out_data.resize(current_nnz + nnz_chunk, axis=0)
                     out_data[current_nnz:] = chunk_sp.data
@@ -860,8 +932,6 @@ def NBumiCompareModels(*args, **kwargs):
                     new_indptr_list = chunk_sp.indptr[1:].astype(np.int64) + current_nnz
                     out_indptr[i + 1 : end_row + 1] = new_indptr_list
                     current_nnz += nnz_chunk
-                    del data_gpu, row_indices, size_factors_for_chunk, indptr_gpu
-                    cupy.get_default_memory_pool().free_all_blocks()
         print(f"Phase [1/4]: COMPLETE{' '*50}")
 
         # Phase 2: Fit Basic Model on normalized data
@@ -1216,7 +1286,7 @@ def NBumiImputeNorm(counts, fit, total_counts_per_cell=None):
     else:
         return norm
 
-def NBumiConvertData(input_data, is_log=False, is_counts=False, pseudocount=1, preserve_sparse=True):
+def NBumiConvertData(input_data, is_log=False, is_counts=False, pseudocount=1, preserve_sparse=False):
     """Convert various input formats to counts matrix."""
     
     # Store gene and cell names for later use

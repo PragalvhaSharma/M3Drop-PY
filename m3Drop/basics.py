@@ -4,7 +4,7 @@ from anndata import AnnData
 import scipy.sparse as sp
 
 
-def M3DropConvertData(input_data, is_log=False, is_counts=False, pseudocount=1, preserve_sparse=True):
+def M3DropConvertData(input_data, is_log=False, is_counts=False, pseudocount=1, preserve_sparse=False):
     """
     Converts various data formats to a normalized, non-log-transformed matrix.
 
@@ -27,8 +27,9 @@ def M3DropConvertData(input_data, is_log=False, is_counts=False, pseudocount=1, 
     Returns
     -------
     pd.DataFrame or scipy.sparse matrix
-        A normalized, non-log-transformed matrix. Returns sparse matrix if 
-        preserve_sparse=True and input is sparse, otherwise DataFrame.
+        A normalized, non-log-transformed matrix. By default returns a pandas
+        DataFrame. If preserve_sparse=True and input is sparse, returns a
+        sparse matrix wrapper that preserves metadata.
     """
     def remove_undetected_genes(mat, gene_names=None, cell_names=None):
         """Helper to filter out genes with no expression across all cells"""
@@ -64,21 +65,30 @@ def M3DropConvertData(input_data, is_log=False, is_counts=False, pseudocount=1, 
     
     # 1. Handle Input Type and convert to appropriate format
     if isinstance(input_data, AnnData):
-        # AnnData stores data as cells x genes, we need genes x cells for M3Drop
-        # So var_names are the genes, obs_names are the cells
-        gene_names = input_data.var_names.copy()  # These are the actual gene names
-        cell_names = input_data.obs_names.copy()  # These are the actual cell names
-        
-        if issparse(input_data.X) and preserve_sparse:
-            # Keep as sparse matrix but note that AnnData is cells x genes, we need genes x cells
-            counts = input_data.X.T.tocsr()  # Transpose to genes x cells
-        else:
-            # Convert to DataFrame as before
-            if issparse(input_data.X):
-                # AnnData: cells x genes -> transpose to genes x cells for DataFrame
-                counts = pd.DataFrame(input_data.X.toarray().T, index=input_data.var_names, columns=input_data.obs_names)
+        # Robustly handle both AnnData and AnnData.T
+        # We always return genes × cells. Decide which axis represents genes.
+        if input_data.n_vars >= input_data.n_obs:
+            # Standard orientation: obs=cells, var=genes
+            gene_names = input_data.var_names.copy()
+            cell_names = input_data.obs_names.copy()
+            if issparse(input_data.X) and preserve_sparse:
+                counts = input_data.X.T.tocsr()  # genes × cells
             else:
-                counts = pd.DataFrame(input_data.X.T, index=input_data.var_names, columns=input_data.obs_names)
+                if issparse(input_data.X):
+                    counts = pd.DataFrame(input_data.X.toarray().T, index=gene_names, columns=cell_names)
+                else:
+                    counts = pd.DataFrame(input_data.X.T, index=gene_names, columns=cell_names)
+        else:
+            # Transposed orientation: obs=genes, var=cells
+            gene_names = input_data.obs_names.copy()
+            cell_names = input_data.var_names.copy()
+            if issparse(input_data.X) and preserve_sparse:
+                counts = input_data.X.tocsr()  # already genes × cells
+            else:
+                if issparse(input_data.X):
+                    counts = pd.DataFrame(input_data.X.toarray(), index=gene_names, columns=cell_names)
+                else:
+                    counts = pd.DataFrame(input_data.X, index=gene_names, columns=cell_names)
     elif isinstance(input_data, pd.DataFrame):
         counts = input_data
     elif isinstance(input_data, np.ndarray):

@@ -9,8 +9,8 @@ from m3Drop.Extremes import M3DropGetExtremes
 
 # Step 2: Load your AnnData (.h5ad) file
 # Replace with the actual path to your file if different.
-h5ad_file = "59cad80b-1b16-4b44-8fbf-178928e76c57.h5ad"
-adata = sc.read_h5ad(h5ad_file)/
+h5ad_file = "data/GSM8267529_G-P28_raw_matrix.h5ad"
+adata = sc.read_h5ad(h5ad_file)
 print("AnnData object loaded successfully:")
 print(adata)
 

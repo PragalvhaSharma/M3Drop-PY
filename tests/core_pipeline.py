@@ -25,8 +25,11 @@ from m3Drop.NB_UMI import (
 )
 
 # --- 1. DEFINE FILE PATHS AND PARAMETERS ---
-# !! CHANGE THIS LINE TO SWITCH DATASETS !!
-RAW_DATA_FILE = "/Users/pragalvhasharma/Downloads/PragGOToDocuments/Blanc/school/mcpServers/newM3Drop/M3Drop-PY/data/GSM8267529_G-P28_raw_matrix.h5ad"
+# Resolve dataset paths relative to repository data directory
+REPO_ROOT = PROJECT_ROOT
+DATA_DIR = os.path.join(REPO_ROOT, "data")
+DATASET_BASENAME = "GSM8267529_G-P28_raw_matrix"  # default dataset in data/
+RAW_DATA_FILE = os.path.join(DATA_DIR, f"{DATASET_BASENAME}.h5ad")
 
 # Derive dataset basename from the input file (without extension)
 import os
