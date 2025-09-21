@@ -39,7 +39,7 @@ Where:
 You can install M3DropPy using pip:
 
 ```bash
-pip install m3drop
+pip install M3Drop
 ```
 
 ## Imports
