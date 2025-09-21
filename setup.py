@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name="M3Drop",
-    version="0.1.6",
+    version="0.1.7",
     author="Tallulah Andrews, Pragalvha Sharma, Anthony Son",
     author_email="tandrew6@uwo.ca, pragalvhasharma@gmail.com, json59@uwo.ca",
     description="A Python implementation of the M3Drop single-cell RNA-seq analysis tool.",
@@ -30,7 +30,7 @@ setuptools.setup(
         "numpy==1.26.4",
         "pandas==2.2.2",
         "scanpy==1.10.3",
-        "scikit-learn==1.4.2",
+        "scikit-learn==1.7.1",
         "scipy==1.13.0",
         "seaborn==0.13.2",
         "statsmodels==0.14.4",
