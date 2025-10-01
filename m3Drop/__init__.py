@@ -3,7 +3,8 @@ from .basics import (
     M3DropConvertData,
     M3DropGetMarkers,
     bg__calc_variables,
-    bg__horizontal_residuals_MM_log10
+    bg__horizontal_residuals_MM_log10,
+    compute_gene_statistics_h5ad
 )
 
 # Imputation
@@ -128,6 +129,7 @@ __all__ = [
     'M3DropGetMarkers',
     'bg__calc_variables',
     'bg__horizontal_residuals_MM_log10',
+    'compute_gene_statistics_h5ad',
 
     # Imputation
     'M3DropImputation',

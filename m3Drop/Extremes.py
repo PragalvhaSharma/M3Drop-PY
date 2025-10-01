@@ -143,11 +143,14 @@ def hidden__test_DE_S_equiv(expr_mat, fit=None, method="propagate"):
     return {'pval': pval, 'effect': effect_size}
 
 
-def bg__get_extreme_residuals(expr_mat, fit=None, fdr_threshold=0.1, percent=None, v_threshold=(0.05, 0.95), direction="right", suppress_plot=False):
+def bg__get_extreme_residuals(expr_mat=None, fit=None, gene_info=None, fdr_threshold=0.1, percent=None, v_threshold=(0.05, 0.95), direction="right", suppress_plot=False):
     """
     Internal function to get outliers from the Michaelis-Menten curve.
     """
-    gene_info = bg__calc_variables(expr_mat)
+    if gene_info is None:
+        if expr_mat is None:
+            raise ValueError("Either expr_mat or gene_info must be provided.")
+        gene_info = bg__calc_variables(expr_mat)
     if fit is None:
         fit = bg__fit_MM(gene_info['p'], gene_info['s'])
     
@@ -256,13 +259,13 @@ def M3DropFeatureSelection(expr_mat, mt_method="bon", mt_threshold=0.05, suppres
     return TABLE
 
 
-def M3DropGetExtremes(expr_mat, fdr_threshold=0.1, percent=None, v_threshold=(0.05, 0.95), suppress_plot=False):
+def M3DropGetExtremes(expr_mat=None, fdr_threshold=0.1, percent=None, v_threshold=(0.05, 0.95), suppress_plot=False, gene_info=None):
     """
     Identifies outliers left and right of a fitted Michaelis-Menten curve.
     
     Parameters
     ----------
-    expr_mat : pd.DataFrame or np.ndarray
+    expr_mat : pd.DataFrame or np.ndarray, optional
         Normalized (not log-transformed) expression values.
     fdr_threshold : float, default=0.1
         Threshold for identifying significant outliers.
@@ -272,6 +275,10 @@ def M3DropGetExtremes(expr_mat, fdr_threshold=0.1, percent=None, v_threshold=(0.
         Restrict to this range of dropout rates.
     suppress_plot : bool, default=False
         Whether to plot the fitted curve.
+    gene_info : dict, optional
+        Precomputed gene statistics (output of ``bg__calc_variables`` or
+        ``compute_gene_statistics_h5ad``) to enable out-of-core execution when
+        ``expr_mat`` cannot be materialised in memory.
 
     Returns
     -------
@@ -286,25 +293,39 @@ def M3DropGetExtremes(expr_mat, fdr_threshold=0.1, percent=None, v_threshold=(0.
     def bg__highlight_genes(base_plot, mat, genes, **kwargs): 
         return
 
-    base_plot = bg__dropout_plot_base(expr_mat, suppress_plot=suppress_plot)
-    MM = bg__fit_MM(base_plot['gene_info']['p'], base_plot['gene_info']['s'])
+    if gene_info is None:
+        if expr_mat is None:
+            raise ValueError("Either expr_mat or gene_info must be provided.")
+        base_plot = bg__dropout_plot_base(expr_mat, suppress_plot=suppress_plot)
+        gene_info_local = base_plot['gene_info']
+    else:
+        gene_info_local = gene_info
+        base_plot = {'gene_info': gene_info_local}
+
+    expr_mat_for_calc = expr_mat if gene_info is None else None
+
+    MM = bg__fit_MM(gene_info_local['p'], gene_info_local['s'])
 
     if not suppress_plot:
         bg__add_model_to_plot(MM, base_plot)
     
     # Match R implementation parameter handling
     if percent is None:
-        shifted_right = bg__get_extreme_residuals(expr_mat, fit=MM, fdr_threshold=fdr_threshold, 
-                                                 v_threshold=v_threshold, direction="right", suppress_plot=True)
-        shifted_left = bg__get_extreme_residuals(expr_mat, fit=MM, fdr_threshold=fdr_threshold, 
-                                                v_threshold=v_threshold, direction="left", suppress_plot=True)
+        shifted_right = bg__get_extreme_residuals(expr_mat_for_calc, fit=MM, gene_info=gene_info_local,
+                                                 fdr_threshold=fdr_threshold, v_threshold=v_threshold,
+                                                 direction="right", suppress_plot=True)
+        shifted_left = bg__get_extreme_residuals(expr_mat_for_calc, fit=MM, gene_info=gene_info_local,
+                                                fdr_threshold=fdr_threshold, v_threshold=v_threshold,
+                                                direction="left", suppress_plot=True)
     else:
-        shifted_right = bg__get_extreme_residuals(expr_mat, fit=MM, percent=percent, 
-                                                 v_threshold=v_threshold, direction="right", suppress_plot=True)
-        shifted_left = bg__get_extreme_residuals(expr_mat, fit=MM, percent=percent, 
-                                                v_threshold=v_threshold, direction="left", suppress_plot=True)
+        shifted_right = bg__get_extreme_residuals(expr_mat_for_calc, fit=MM, gene_info=gene_info_local,
+                                                 percent=percent, v_threshold=v_threshold,
+                                                 direction="right", suppress_plot=True)
+        shifted_left = bg__get_extreme_residuals(expr_mat_for_calc, fit=MM, gene_info=gene_info_local,
+                                                percent=percent, v_threshold=v_threshold,
+                                                direction="left", suppress_plot=True)
     
-    if not suppress_plot:
+    if not suppress_plot and expr_mat is not None:
         bg__highlight_genes(base_plot, expr_mat, shifted_right)
         bg__highlight_genes(base_plot, expr_mat, shifted_left)
         

@@ -1,43 +1,58 @@
-import sys
 import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import sys
+from pathlib import Path
 
-import scanpy as sc
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import pandas as pd
+import pytest
+import scanpy as sc
+
 from m3Drop.Extremes import M3DropTestShift
 
-# Step 1: Load your AnnData (.h5ad) file
-h5ad_file = "data/GSM8267529_G-P28_raw_matrix.h5ad"
-adata = sc.read_h5ad(h5ad_file)
-print("AnnData object loaded successfully:")
-print(adata)
+DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "GSM8267529_G-P28_raw_matrix.h5ad"
+MAX_CELLS = 200
+MAX_BACKGROUND_GENES = 200
+MIN_GENES_TO_TEST = 10
 
 
-# Step 2: Prepare the data
-# Handle sparse matrices by converting to dense format first
-if hasattr(adata.X, 'toarray'):
-    # If it's a sparse matrix, convert to dense
-    raw_counts = adata.X.toarray().T
-else:
-    # If it's already dense, just transpose
-    raw_counts = adata.X.T
+@pytest.fixture(scope="module")
+def small_raw_counts():
+    if not DATA_FILE.exists():
+        pytest.skip(f"Missing test fixture file: {DATA_FILE}")
 
-if not isinstance(raw_counts, pd.DataFrame):
-    raw_counts = pd.DataFrame(raw_counts, index=adata.var_names, columns=adata.obs_names)
+    adata = sc.read_h5ad(DATA_FILE, backed="r")
+    subset = None
+    try:
+        max_cells = min(adata.n_obs, MAX_CELLS)
+        background_genes = list(adata.var_names[:min(adata.n_vars, MAX_BACKGROUND_GENES)])
+        if max_cells == 0 or not background_genes:
+            pytest.skip("Dataset too small for M3DropTestShift test.")
 
-# Step 3: Select a subset of genes to test
-genes_to_test = raw_counts.index[:10].tolist()
-print(f"Genes to test: {genes_to_test}")
+        subset = adata[:max_cells, background_genes].to_memory()
+    finally:
+        if hasattr(adata, "file") and adata.file is not None:
+            adata.file.close()
 
-# Step 4: Run M3DropTestShift Analysis
-print("Running M3DropTestShift...")
-shift_results = M3DropTestShift(raw_counts, genes_to_test=genes_to_test, name="First10")
+    if subset is None:
+        pytest.fail("Failed to build subset for M3DropTestShift test.")
 
-# Step 5: Print the results
-print("Shift test results:")
-print(shift_results)
+    raw_counts = subset.to_df().astype("float32").T
+    raw_counts.index = raw_counts.index.astype(str)
+    return raw_counts
 
-# Basic check to ensure the output is a DataFrame
-assert isinstance(shift_results, pd.DataFrame)
-assert not shift_results.empty
-print("Test passed: M3DropTestShift ran successfully.") 
+
+def test_m3drop_test_shift_runs_on_small_subset(small_raw_counts):
+    if len(small_raw_counts.index) < MIN_GENES_TO_TEST:
+        pytest.skip("Not enough genes available for M3DropTestShift test.")
+
+    genes_to_test = small_raw_counts.index[:MIN_GENES_TO_TEST].tolist()
+    shift_results = M3DropTestShift(
+        small_raw_counts,
+        genes_to_test=genes_to_test,
+        name="First10",
+        suppress_plot=True,
+    )
+
+    assert isinstance(shift_results, pd.DataFrame)
+    assert not shift_results.empty

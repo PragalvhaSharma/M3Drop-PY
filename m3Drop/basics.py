@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from anndata import AnnData
 import scipy.sparse as sp
+import h5py
 
 
 def M3DropConvertData(input_data, is_log=False, is_counts=False, pseudocount=1, preserve_sparse=False):
@@ -197,6 +198,136 @@ class SparseMat3Drop:
     def mean(self, axis=None):
         """Mean operation maintaining sparse efficiency"""
         return self.matrix.mean(axis=axis)
+
+
+def compute_gene_statistics_h5ad(filename, chunk_size=5000):
+    """Compute gene-level statistics for large .h5ad files without
+    materialising the full matrix in memory.
+
+    The function streams the sparse matrix in cell chunks and computes the
+    quantities required by ``bg__calc_variables``: mean expression (``s``),
+    dropout rate (``p``), and their standard errors. Counts are normalised to
+    counts per million (CPM) to mirror ``M3DropConvertData``.
+
+    Parameters
+    ----------
+    filename : str
+        Path to the .h5ad file containing a sparse count matrix.
+    chunk_size : int, default=5000
+        Number of cells to load per chunk when streaming from disk. Adjust to
+        balance memory use and throughput.
+
+    Returns
+    -------
+    tuple(dict, int)
+        A tuple where the first element is a ``gene_info`` style dictionary
+        with keys ``s``, ``s_stderr``, ``p`` and ``p_stderr`` (all pandas
+        Series indexed by gene names), and the second element is the total
+        number of cells in the dataset.
+    """
+
+    def _read_axis_index(group):
+        if group is None:
+            return None
+        for key in ("_index", "index", "names"):
+            if key in group:
+                data = group[key][...]
+                break
+        else:
+            return None
+
+        if isinstance(data, np.ndarray):
+            if data.dtype.kind in {"S", "O"}:
+                decoded = [item.decode("utf-8") if isinstance(item, bytes) else str(item) for item in data]
+            else:
+                decoded = data.astype(str).tolist()
+        else:
+            decoded = [str(data)]
+        return pd.Index(decoded)
+
+    with h5py.File(filename, "r") as f:
+        if "X" not in f:
+            raise ValueError(f"Expected dataset 'X' in {filename} but none was found.")
+
+        X_group = f["X"]
+        encoding_type = X_group.attrs.get("encoding-type")
+        if encoding_type != "csr_matrix":
+            raise ValueError(
+                f"Only CSR-encoded sparse matrices are supported for streaming; found '{encoding_type}'."
+            )
+
+        shape = X_group.attrs.get("shape")
+        if shape is None or len(shape) != 2:
+            raise ValueError("Missing or invalid shape attribute for dataset 'X'.")
+
+        n_cells, n_genes = map(int, shape)
+        indptr = X_group["indptr"][...].astype(np.int64, copy=False)
+        indices_ds = X_group["indices"]
+        data_ds = X_group["data"]
+
+        gene_names = _read_axis_index(f.get("var"))
+        if gene_names is None or len(gene_names) != n_genes:
+            gene_names = pd.Index([f"Gene_{i}" for i in range(n_genes)])
+
+        sum_per_gene = np.zeros(n_genes, dtype=np.float64)
+        sum_sq_per_gene = np.zeros(n_genes, dtype=np.float64)
+        nonzero_per_gene = np.zeros(n_genes, dtype=np.int64)
+
+        for cell_start in range(0, n_cells, chunk_size):
+            cell_end = min(cell_start + chunk_size, n_cells)
+            nnz_start = indptr[cell_start]
+            nnz_end = indptr[cell_end]
+            if nnz_end - nnz_start == 0:
+                continue
+
+            indices_chunk = indices_ds[nnz_start:nnz_end]
+            data_chunk = data_ds[nnz_start:nnz_end]
+
+            rel_indptr = indptr[cell_start:cell_end + 1] - nnz_start
+            chunk_matrix = sp.csr_matrix(
+                (data_chunk.astype(np.float64, copy=False), indices_chunk, rel_indptr),
+                shape=(cell_end - cell_start, n_genes)
+            )
+
+            cell_sums = np.array(chunk_matrix.sum(axis=1)).ravel()
+            scaling = np.zeros_like(cell_sums, dtype=np.float64)
+            valid_cells = cell_sums > 0
+            scaling[valid_cells] = 1e6 / cell_sums[valid_cells]
+
+            scaled_chunk = chunk_matrix.multiply(scaling[:, None])
+
+            sum_per_gene += np.array(scaled_chunk.sum(axis=0)).ravel()
+            sum_sq_per_gene += np.array(scaled_chunk.power(2).sum(axis=0)).ravel()
+            nonzero_per_gene += np.asarray(chunk_matrix.getnnz(axis=0)).ravel()
+
+    n_cells_float = float(n_cells)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        mean_per_gene = sum_per_gene / n_cells_float
+        mean_sq_per_gene = sum_sq_per_gene / n_cells_float
+        variance_term = np.maximum(mean_sq_per_gene - mean_per_gene**2, 0.0)
+        s_stderr = np.sqrt(variance_term / n_cells_float)
+
+    p = 1.0 - nonzero_per_gene.astype(np.float64) / n_cells_float
+    p_stderr = np.sqrt(p * (1.0 - p) / n_cells_float)
+
+    detected = nonzero_per_gene > 0
+    if np.sum(~detected) > 0:
+        print(f"Removing {np.sum(~detected)} undetected genes.")
+
+    mean_per_gene = mean_per_gene[detected]
+    s_stderr = s_stderr[detected]
+    p = p[detected]
+    p_stderr = p_stderr[detected]
+    gene_index = gene_names[detected]
+
+    gene_info = {
+        's': pd.Series(mean_per_gene, index=gene_index),
+        's_stderr': pd.Series(s_stderr, index=gene_index),
+        'p': pd.Series(p, index=gene_index),
+        'p_stderr': pd.Series(p_stderr, index=gene_index)
+    }
+
+    return gene_info, n_cells
 
 
 def bg__calc_variables(expr_mat):
