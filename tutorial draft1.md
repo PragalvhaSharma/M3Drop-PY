@@ -147,9 +147,11 @@ Gene,effect_size,p.value,q.value
 
 #### Volcano Plot (`Human Heart_volcano_plot.png`)
 
+#### Volcano Plot (`Human Heart_volcano_plot.png`)
+
 This plot visualizes the "Combined Dropout" results. Observations (Genes) in red are statistically significant.
 
-![Volcano plot of Human Heart dataset](tutorial_png/Human Heart_volcano_plot.png)
+![Volcano plot of Human Heart dataset](../tutorial_png/Human Heart_volcano_plot.png)
 
 ## Diagnostic Pipeline - Human Heart
 
@@ -264,10 +266,10 @@ Total execution time: 4.16 minutes.
 
 This plot shows the log-log relationship between mean gene expression (x-axis) and the calculated dispersion parameter (y-axis). The red line indicates the regression fit used to smooth the dispersion values.
 
-![Dispersion vs Mean plot for Human Heart dataset](tutorial_png/Human Heart_disp_vs_mean.png)
+![Dispersion vs Mean plot for Human Heart dataset](../tutorial_png/Human Heart_disp_vs_mean.png)
 
 #### Model Comparison Plot (`Human Heart_NBumiCompareModels.png`)
 
 This plot compares the observed dropout rate (black dots) against the expected dropout rates from the simple "Basic Fit" (purple) and the "Depth-Adjusted Fit" (gold). This visualization confirms that the Depth-Adjusted model provides a much better fit to the observed data.
 
-![Model Comparison plot for Human Heart dataset](tutorial_png/Human Heart_NBumiCompareModels.png)
+![Model Comparison plot for Human Heart dataset](../tutorial_png/Human Heart_NBumiCompareModels.png)
