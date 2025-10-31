@@ -2,8 +2,6 @@
 
 ## Core Pipeline - Human Heart
 
-This tutorial demonstrates a complete execution of the `core_pipeline.py` script on a public dataset.
-
 ### 1. Setup
 
 1.  **Test Data:**
@@ -18,7 +16,6 @@ This tutorial demonstrates a complete execution of the `core_pipeline.py` script
     * Open `core_pipeline.py` and ensure the `DATASET_BASENAME` variable is correctly set to the name of the dataset.
 
     ```python
-    # !! CHANGE THIS LINE TO SWITCH DATASETS !!
     DATASET_BASENAME = "Human Heart"
     ```
 
@@ -30,9 +27,9 @@ Run the script from your terminal:
 python core_pipeline.py
 ```
 
-### 3. Curated Log
+### 3. Terminal Output
 
-The following is a curated log of the terminal output. Repetitive progress lines have been removed for clarity.
+You should be able to see the following lines on your terminal.
 
 ```text
 --- Initializing M3Drop+ Pipeline for Human Heart.h5ad ---
@@ -110,8 +107,6 @@ Total execution time: 2.26 minutes.
 
 ### 4. Pipeline Results
 
-The run successfully generated all output files.
-
 #### High Variance Genes (`Human Heart_high_variance_genes.csv`)
 
 This file ranks all genes by their residual, or how much more variable they are than expected. Here are the top 10 most variable genes:
@@ -152,13 +147,11 @@ Gene,effect_size,p.value,q.value
 
 #### Volcano Plot (`Human Heart_volcano_plot.png`)
 
-This plot visualizes the "Combined Dropout" results. Genes in red are statistically significant.
+This plot visualizes the "Combined Dropout" results. Observations (Genes) in red are statistically significant.
 
 ![Volcano plot of Human Heart dataset](tutorial_png/Human Heart_volcano_plot.png)
 
 ## Diagnostic Pipeline - Human Heart
-
-This tutorial demonstrates a complete execution of the `diagnostics_pipeline.py` script on the same dataset used in the core pipeline example.
 
 ### 1. Setup
 
@@ -174,7 +167,6 @@ This tutorial demonstrates a complete execution of the `diagnostics_pipeline.py`
     * Open `diagnostics_pipeline.py` and ensure the `DATASET_BASENAME` variable is correctly set to the name of the dataset.
 
     ```python
-    # !! CHANGE THIS LINE TO SWITCH DATASETS !!
     DATASET_BASENAME = "Human Heart"
     ```
 
@@ -186,9 +178,9 @@ Run the script from your terminal:
 python diagnostics_pipeline.py
 ```
 
-### 3. Curated Log
+### 3. Terminal Output
 
-The following is a curated log of the terminal output. Repetitive progress lines have been removed for clarity.
+You should be able to see the following lines on your terminal.
 
 ```text
 --- Initializing M3Drop+ Diagnostic Pipeline for Human Heart.h5ad ---
