@@ -86,7 +86,7 @@ pearson_residuals = NBumiPearsonResiduals(counts, danb_fit)
 
 ## Original R Package
 
-This Python implementation is based on the M3Drop R package developed by Tallulah Andrews and converted to Python by Pragalvha Sharma and Anthony Son.
+This Python implementation is based on the M3Drop R package developed by Tallulah Andrews and converted to Python by Anthony Son and Pragalvha Sharma.
 
 ## Citation
 
