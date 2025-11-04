@@ -34,6 +34,7 @@ from .Extremes import (
 
 # Negative binomial UMI modeling
 from .NB_UMI import (
+    ConvertDataSparse,
     NBumiFitModel,
     NBumiFitBasicModel,
     NBumiCheckFit,
@@ -43,7 +44,9 @@ from .NB_UMI import (
     NBumiCheckFitFS,
     NBumiFeatureSelectionHighVar,
     NBumiFeatureSelectionCombinedDrop,
+    NBumiCombinedDropVolcano,
     NBumiCompareModels,
+    NBumiPlotDispVsMean,
     NBumiImputeNorm,
     hidden_calc_vals,
 )
@@ -147,6 +150,7 @@ __all__ = [
     'M3DropTestShift',
 
     # NB-UMI modeling
+    'ConvertDataSparse',
     'NBumiFitModel',
     'NBumiFitBasicModel',
     'NBumiCheckFit',
@@ -156,7 +160,9 @@ __all__ = [
     'NBumiCheckFitFS',
     'NBumiFeatureSelectionHighVar',
     'NBumiFeatureSelectionCombinedDrop',
+    'NBumiCombinedDropVolcano',
     'NBumiCompareModels',
+    'NBumiPlotDispVsMean',
     'NBumiImputeNorm',
     'hidden_calc_vals',
 
