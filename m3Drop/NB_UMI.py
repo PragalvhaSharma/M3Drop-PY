@@ -149,15 +149,15 @@ def _hidden_calc_vals_counts(counts):
         'ng': ng
     }
 
-def hidden_calc_vals(filename_or_counts, chunk_size: int = 5000):
+def hidden_calc_vals(filename, chunk_size: int = 5000):
     """
     Calculates key statistics from a large, sparse (cell, gene) .h5ad file
     using a memory-safe, GPU-accelerated, single-pass algorithm. If a matrix
     is provided instead of a filename, falls back to the original in-memory
     implementation (genes x cells).
     """
-    if isinstance(filename_or_counts, str) and os.path.exists(filename_or_counts):
-        filename = filename_or_counts
+    if isinstance(filename, str) and os.path.exists(filename):
+        #filename = filename
         start_time = time.perf_counter()
         print(f"FUNCTION: hidden_calc_vals() | FILE: {filename}")
         adata_meta = anndata.read_h5ad(filename, backed='r')
