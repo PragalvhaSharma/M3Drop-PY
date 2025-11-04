@@ -12,7 +12,7 @@ from m3Drop.basics import M3DropConvertData, compute_gene_statistics_h5ad
 
 # Step 2: Load your AnnData (.h5ad) file
 # Replace with the actual path to your file if different.
-h5ad_file = "/Users/pragalvhasharma/Downloads/PragGOToDocuments/CompSci/myProjects/M3Drop/M3Drop-PY/m3Drop/Human_Heart.h5ad"
+h5ad_file = " "
 print(f"Loading data from: {h5ad_file}")
 
 file_size_bytes = os.path.getsize(h5ad_file)
