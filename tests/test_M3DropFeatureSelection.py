@@ -5,6 +5,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import scanpy as sc
 import pandas as pd
 from m3Drop.Extremes import M3DropFeatureSelection
+from m3Drop import ann_data_to_sparse_gene_matrix
 
 
 def test_m3drop_feature_selection_comprehensive():
@@ -14,7 +15,7 @@ def test_m3drop_feature_selection_comprehensive():
     """
     
     # Step 1: Load your AnnData (.h5ad) file
-    h5ad_file = "data/GSM8267529_G-P28_raw_matrix.h5ad"
+    h5ad_file = " "
     adata = sc.read_h5ad(h5ad_file)
     print("=" * 80)
     print("AnnData object loaded successfully:")
@@ -29,10 +30,7 @@ def test_m3drop_feature_selection_comprehensive():
     
     # M3Drop functions traditionally use raw counts
     # Transpose to have genes as rows and cells as columns
-    raw_counts = adata.to_df().T
-    
-    if not isinstance(raw_counts, pd.DataFrame):
-        raw_counts = pd.DataFrame(raw_counts, index=adata.var_names, columns=adata.obs_names)
+    raw_counts = ann_data_to_sparse_gene_matrix(adata)
     
     print("Running M3DropFeatureSelection with raw counts...")
     print(f"Data shape: {raw_counts.shape} (genes x cells)")
@@ -75,7 +73,7 @@ def test_m3drop_feature_selection_comprehensive():
     sc.pp.normalize_total(adata_norm, target_sum=1e4)
     print("Applied normalization: total counts per cell = 10,000")
     
-    normalized_matrix = adata_norm.to_df().T
+    normalized_matrix = ann_data_to_sparse_gene_matrix(adata_norm)
     
     print(f"Data shape: {normalized_matrix.shape} (genes x cells)")
     print(f"Parameters: mt_method='fdr_bh', mt_threshold=0.01")

@@ -4,6 +4,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import scanpy as sc
+import scipy.sparse
 from m3Drop.Extremes import M3DropGetExtremes
 from m3Drop.basics import M3DropConvertData, compute_gene_statistics_h5ad
 
@@ -11,7 +12,7 @@ from m3Drop.basics import M3DropConvertData, compute_gene_statistics_h5ad
 
 # Step 2: Load your AnnData (.h5ad) file
 # Replace with the actual path to your file if different.
-h5ad_file = "data/GSM8267529_G-P28_raw_matrix.h5ad"
+h5ad_file = "/Users/pragalvhasharma/Downloads/PragGOToDocuments/CompSci/myProjects/M3Drop/M3Drop-PY/m3Drop/Human_Heart.h5ad"
 print(f"Loading data from: {h5ad_file}")
 
 file_size_bytes = os.path.getsize(h5ad_file)
@@ -38,13 +39,13 @@ else:
     print("AnnData object loaded successfully:")
     print(adata)
     print(f"Data shape: {adata.shape} (cells x genes)")
-    print(f"Is sparse: {sc.sparse.issparse(adata.X)}")
+    print(f"Is sparse: {scipy.sparse.issparse(adata.X)}")
 
     # Step 3: Prepare the data for M3Drop analysis
     # M3Drop requires a normalized, non-log-transformed expression matrix.
     # Use M3DropConvertData which handles sparse matrices efficiently
     print("Converting data for M3Drop (memory-efficient sparse mode)...")
-    preserve_sparse = sc.sparse.issparse(adata.X)
+    preserve_sparse = scipy.sparse.issparse(adata.X)
     if preserve_sparse:
         print("Input matrix is sparse; keeping sparse representation to avoid densifying large datasets.")
     normalized_matrix = M3DropConvertData(

@@ -4,7 +4,8 @@ from .basics import (
     M3DropGetMarkers,
     bg__calc_variables,
     bg__horizontal_residuals_MM_log10,
-    compute_gene_statistics_h5ad
+    compute_gene_statistics_h5ad,
+    ann_data_to_sparse_gene_matrix,
 )
 
 # Imputation
@@ -133,6 +134,7 @@ __all__ = [
     'bg__calc_variables',
     'bg__horizontal_residuals_MM_log10',
     'compute_gene_statistics_h5ad',
+    'ann_data_to_sparse_gene_matrix',
 
     # Imputation
     'M3DropImputation',

@@ -9,8 +9,9 @@ import pytest
 import scanpy as sc
 
 from m3Drop.Extremes import M3DropTestShift
+from m3Drop import ann_data_to_sparse_gene_matrix
 
-DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "GSM8267529_G-P28_raw_matrix.h5ad"
+DATA_FILE = Path(__file__).resolve().parent.parent / "data" / " "
 MAX_CELLS = 200
 MAX_BACKGROUND_GENES = 200
 MIN_GENES_TO_TEST = 10
@@ -37,16 +38,21 @@ def small_raw_counts():
     if subset is None:
         pytest.fail("Failed to build subset for M3DropTestShift test.")
 
-    raw_counts = subset.to_df().astype("float32").T
-    raw_counts.index = raw_counts.index.astype(str)
-    return raw_counts
+    sparse_counts = ann_data_to_sparse_gene_matrix(subset)
+    return sparse_counts
 
 
 def test_m3drop_test_shift_runs_on_small_subset(small_raw_counts):
-    if len(small_raw_counts.index) < MIN_GENES_TO_TEST:
+    gene_names = (
+        list(map(str, small_raw_counts.gene_names))
+        if getattr(small_raw_counts, "gene_names", None) is not None
+        else [str(i) for i in range(small_raw_counts.shape[0])]
+    )
+
+    if len(gene_names) < MIN_GENES_TO_TEST:
         pytest.skip("Not enough genes available for M3DropTestShift test.")
 
-    genes_to_test = small_raw_counts.index[:MIN_GENES_TO_TEST].tolist()
+    genes_to_test = gene_names[:MIN_GENES_TO_TEST]
     shift_results = M3DropTestShift(
         small_raw_counts,
         genes_to_test=genes_to_test,

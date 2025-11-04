@@ -6,9 +6,10 @@ import scanpy as sc
 import pandas as pd
 import numpy as np
 from m3Drop.basics import M3DropGetMarkers
+from m3Drop import ann_data_to_sparse_gene_matrix
 
 # Step 1: Load your AnnData (.h5ad) file
-h5ad_file = "data/GSM8267529_G-P28_raw_matrix.h5ad"
+h5ad_file = " "
 adata = sc.read_h5ad(h5ad_file)
 print("AnnData object loaded successfully:")
 print(adata)
@@ -18,7 +19,7 @@ print(adata)
 sc.pp.normalize_total(adata, target_sum=1e4)
 print("Normalized data for M3Drop.")
 
-normalized_matrix = adata.to_df().T # Transpose to have genes as rows, cells as columns for M3DropGetMarkers
+normalized_matrix = ann_data_to_sparse_gene_matrix(adata)
 
 
 # Step 3: Create dummy labels for the cells

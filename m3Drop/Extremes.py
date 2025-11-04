@@ -2,7 +2,13 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 from .Curve_fitting import bg__fit_MM
-from .basics import bg__calc_variables, hidden__invert_MM, bg__horizontal_residuals_MM_log10
+from .basics import (
+    bg__calc_variables,
+    hidden__invert_MM,
+    bg__horizontal_residuals_MM_log10,
+    SparseMat3Drop,
+    _ensure_index,
+)
 import matplotlib.pyplot as plt
 from statsmodels.stats.multitest import multipletests
 
@@ -357,10 +363,20 @@ def M3DropTestShift(expr_mat, genes_to_test, name="", background=None, suppress_
     """
     if isinstance(expr_mat, np.ndarray):
         expr_mat = pd.DataFrame(expr_mat)
-        
+
+    if isinstance(expr_mat, SparseMat3Drop):
+        gene_index = _ensure_index(expr_mat.gene_names, expr_mat.shape[0])
+    else:
+        idx_source = expr_mat.index if hasattr(expr_mat, 'index') else None
+        gene_index = _ensure_index(idx_source, expr_mat.shape[0])
+
+    genes_to_test = [str(g) for g in genes_to_test]
+
     # Set default background to all genes like in R version
     if background is None:
-        background = expr_mat.index.tolist()
+        background = gene_index.tolist()
+    else:
+        background = [str(g) for g in background]
 
     # Placeholders for plotting functions
     def bg__dropout_plot_base(mat, suppress_plot=False, **kwargs): 
@@ -382,8 +398,8 @@ def M3DropTestShift(expr_mat, genes_to_test, name="", background=None, suppress_
 
     # Calculate medians - use the filtered gene names from res instead of original expr_mat.index
     # to ensure mask length matches res length
-    background_mask = res.index.isin([str(g) for g in background])
-    test_mask = res.index.isin([str(g) for g in genes_to_test])
+    background_mask = res.index.isin(background)
+    test_mask = res.index.isin(genes_to_test)
     
     mu = np.nanmedian(res[background_mask])
     s_mu = np.nanmedian(res[test_mask])

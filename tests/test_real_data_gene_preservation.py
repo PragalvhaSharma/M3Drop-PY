@@ -328,7 +328,7 @@ def test_real_data_gene_preservation(h5ad_path):
 def main():
     """Main function to run the test."""
     # User's data file path
-    h5ad_path = "data/GSM8267529_G-P28_raw_matrix.h5ad"
+    h5ad_path = " "
     
     print("🧬 M3Drop Gene Name Preservation Test")
     print("="*80)

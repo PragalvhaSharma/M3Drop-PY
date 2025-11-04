@@ -181,7 +181,7 @@ class SparseMat3Drop:
     def toarray(self):
         """Convert to dense array"""
         return self.matrix.toarray()
-    
+
     def to_dataframe(self):
         """Convert to pandas DataFrame with proper indices"""
         if self.gene_names is not None and self.cell_names is not None:
@@ -198,6 +198,110 @@ class SparseMat3Drop:
     def mean(self, axis=None):
         """Mean operation maintaining sparse efficiency"""
         return self.matrix.mean(axis=axis)
+
+
+def _ensure_index(gene_names, n_genes):
+    """Return a pandas Index of gene names, falling back to sequential labels."""
+    if gene_names is None:
+        return pd.Index([f"Gene_{i}" for i in range(n_genes)])
+    if isinstance(gene_names, pd.Index):
+        return gene_names.astype(str)
+    return pd.Index(np.asarray(gene_names, dtype=object).astype(str))
+
+
+def ann_data_to_sparse_gene_matrix(adata, layer=None, use_raw=False, dtype=np.float32):
+    """Generate a ``SparseMat3Drop`` from an AnnData object without densifying the matrix."""
+    if not isinstance(adata, AnnData):
+        raise TypeError("Expected an AnnData object.")
+
+    if use_raw:
+        if adata.raw is None:
+            raise ValueError("Requested raw matrix, but `adata.raw` is empty.")
+        matrix_data = adata.raw.X
+        gene_names = adata.raw.var_names
+        cell_names = adata.raw.obs_names
+    elif layer is not None:
+        if layer not in adata.layers:
+            raise KeyError(f"Layer '{layer}' not found in AnnData object.")
+        matrix_data = adata.layers[layer]
+        gene_names = adata.var_names
+        cell_names = adata.obs_names
+    else:
+        matrix_data = adata.X
+        gene_names = adata.var_names
+        cell_names = adata.obs_names
+
+    if sp.issparse(matrix_data):
+        matrix = matrix_data.T.tocsr()
+        if dtype is not None:
+            matrix = matrix.astype(dtype, copy=False)
+    else:
+        matrix = sp.csr_matrix(np.asarray(matrix_data.T, dtype=dtype))
+
+    gene_index = _ensure_index(gene_names, matrix.shape[0])
+    cell_index = pd.Index(np.asarray(cell_names, dtype=object).astype(str))
+
+    return SparseMat3Drop(matrix, gene_names=gene_index, cell_names=cell_index)
+
+
+def _iter_sparse_rows(matrix, chunk_size=64, dtype=np.float32):
+    """Yield dense blocks of rows from a sparse matrix, chunked to limit memory usage."""
+    matrix = matrix.tocsr()
+    n_rows = matrix.shape[0]
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    for start in range(0, n_rows, chunk_size):
+        end = min(start + chunk_size, n_rows)
+        block = matrix[start:end, :].toarray()
+        if dtype is not None:
+            block = block.astype(dtype, copy=False)
+        yield start, end, block
+
+
+def compute_row_mean_and_var(expr_mat, ddof=1):
+    """Compute per-gene mean and variance for dense or sparse matrices without densifying fully."""
+    if isinstance(expr_mat, SparseMat3Drop):
+        matrix = expr_mat.matrix
+        gene_index = _ensure_index(expr_mat.gene_names, expr_mat.shape[0])
+        is_sparse = True
+    elif sp.issparse(expr_mat):
+        matrix = expr_mat
+        gene_index = _ensure_index(None, expr_mat.shape[0])
+        is_sparse = True
+    elif isinstance(expr_mat, pd.DataFrame):
+        matrix = expr_mat.values
+        gene_index = _ensure_index(expr_mat.index, expr_mat.shape[0])
+        is_sparse = False
+    elif isinstance(expr_mat, np.ndarray):
+        matrix = expr_mat
+        gene_index = _ensure_index(None, expr_mat.shape[0])
+        is_sparse = False
+    else:
+        raise TypeError("Unsupported matrix type for compute_row_mean_and_var.")
+
+    if is_sparse:
+        n_cells = matrix.shape[1]
+        if n_cells == 0:
+            zeros = np.zeros(matrix.shape[0], dtype=np.float32)
+            return pd.Series(zeros, index=gene_index), pd.Series(zeros, index=gene_index)
+
+        sum_counts = np.array(matrix.sum(axis=1)).ravel()
+        sum_sq = np.array(matrix.multiply(matrix).sum(axis=1)).ravel()
+        means = sum_counts / n_cells
+
+        denom = n_cells - ddof
+        if denom <= 0:
+            vars_ = np.zeros_like(means)
+        else:
+            vars_ = (sum_sq - (sum_counts ** 2) / n_cells) / denom
+            vars_ = np.maximum(vars_, 0)
+
+        return pd.Series(means, index=gene_index), pd.Series(vars_, index=gene_index)
+
+    # Dense case
+    means = matrix.mean(axis=1)
+    vars_ = matrix.var(axis=1, ddof=ddof)
+    return pd.Series(means, index=gene_index), pd.Series(vars_, index=gene_index)
 
 
 def compute_gene_statistics_h5ad(filename, chunk_size=5000):
@@ -543,7 +647,27 @@ def hidden_fast_AUC_m3drop(expression_vec, labels):
     return [AUC, posgroup, pval]
 
 
-def M3DropGetMarkers(expr_mat, labels):
+def _compute_markers_from_sparse(matrix, labels, gene_index, chunk_size=64):
+    labels = np.asarray(labels)
+    if labels.shape[0] != matrix.shape[1]:
+        raise ValueError("Length of labels does not match number of cells.")
+
+    results = []
+    for start, end, block in _iter_sparse_rows(matrix, chunk_size=chunk_size):
+        for offset, row in enumerate(block):
+            results.append(hidden_fast_AUC_m3drop(row, labels))
+
+    auc_df = pd.DataFrame(results, index=gene_index, columns=['AUC', 'Group', 'pval'])
+    auc_df['AUC'] = pd.to_numeric(auc_df['AUC'])
+    auc_df['pval'] = pd.to_numeric(auc_df['pval'])
+    auc_df['Group'] = auc_df['Group'].astype(str)
+    auc_df.loc[auc_df['Group'] == '-1', 'Group'] = "Ambiguous"
+    auc_df = auc_df[auc_df['AUC'] > 0]
+    auc_df = auc_df.sort_values(by='AUC', ascending=False)
+    return auc_df
+
+
+def M3DropGetMarkers(expr_mat, labels, chunk_size=64):
     """
     Identifies marker genes using the area under the ROC curve.
 
@@ -562,28 +686,41 @@ def M3DropGetMarkers(expr_mat, labels):
     pd.DataFrame
         DataFrame with AUC, group, and p-value for each gene.
     """
+    if isinstance(expr_mat, SparseMat3Drop):
+        gene_index = _ensure_index(expr_mat.gene_names, expr_mat.shape[0])
+        return _compute_markers_from_sparse(expr_mat.matrix, labels, gene_index, chunk_size=chunk_size)
+
+    if sp.issparse(expr_mat):
+        gene_index = _ensure_index(None, expr_mat.shape[0])
+        return _compute_markers_from_sparse(expr_mat, labels, gene_index, chunk_size=chunk_size)
+
     if isinstance(expr_mat, np.ndarray):
         expr_mat = pd.DataFrame(expr_mat)
-    
+    elif not isinstance(expr_mat, pd.DataFrame):
+        raise TypeError("expr_mat must be a pandas DataFrame, ndarray, sparse matrix, or SparseMat3Drop.")
+
     if len(labels) != expr_mat.shape[1]:
         raise ValueError("Length of labels does not match number of cells.")
 
+    gene_index = _ensure_index(expr_mat.index, expr_mat.shape[0])
+    labels_array = np.asarray(labels)
+
     # Apply the fast AUC function to each gene
-    aucs = expr_mat.apply(lambda gene: hidden_fast_AUC_m3drop(gene.values, labels), axis=1)
-    
+    aucs = expr_mat.apply(lambda gene: hidden_fast_AUC_m3drop(gene.values.astype(np.float32, copy=False), labels_array), axis=1)
+
     # Convert results to DataFrame
-    auc_df = pd.DataFrame(aucs.tolist(), index=expr_mat.index, columns=['AUC', 'Group', 'pval'])
-    
+    auc_df = pd.DataFrame(aucs.tolist(), index=gene_index, columns=['AUC', 'Group', 'pval'])
+
     # Convert data types
     auc_df['AUC'] = pd.to_numeric(auc_df['AUC'])
     auc_df['pval'] = pd.to_numeric(auc_df['pval'])
     auc_df['Group'] = auc_df['Group'].astype(str)
-    
+
     # Handle ambiguous cases
     auc_df.loc[auc_df['Group'] == '-1', 'Group'] = "Ambiguous"
-    
+
     # Filter and sort
     auc_df = auc_df[auc_df['AUC'] > 0]
     auc_df = auc_df.sort_values(by='AUC', ascending=False)
-    
+
     return auc_df

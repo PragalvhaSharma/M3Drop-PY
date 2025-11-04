@@ -16,6 +16,7 @@ import scanpy as sc
 import pandas as pd
 import numpy as np
 from m3Drop import *
+from m3Drop import ann_data_to_sparse_gene_matrix
 
 def test_nbumi_functions_no_plots():
     """Test all NBumi functions with NO plotting whatsoever"""
@@ -29,7 +30,7 @@ def test_nbumi_functions_no_plots():
     
     # Step 1: Load the data using relative path
     data_dir = os.path.join(parent_dir, "data")
-    h5ad_file = os.path.join(data_dir, "GSM8267529_G-P28_raw_matrix.h5ad")
+    h5ad_file = os.path.join(data_dir, " ")
     
     # Check if data file exists
     if not os.path.exists(h5ad_file):
@@ -56,8 +57,9 @@ def test_nbumi_functions_no_plots():
         sc.pp.filter_cells(adata_small, min_genes=1)
         sc.pp.filter_genes(adata_small, min_cells=1)
         
-        # Get counts matrix
-        counts = adata_small.to_df().T
+        # Get counts matrix without using AnnData.to_df()
+        counts_sparse = ann_data_to_sparse_gene_matrix(adata_small)
+        counts = counts_sparse.to_dataframe()
         print(f"✓ Test data prepared: {counts.shape}")
         results["Data Preparation"] = "PASSED"
     except Exception as e:
