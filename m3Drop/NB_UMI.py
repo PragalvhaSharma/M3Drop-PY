@@ -602,6 +602,8 @@ def NBumiFitModel(*args, **kwargs):
             }
     raise ValueError("NBumiFitModel called with unsupported arguments")
 """
+
+'''
 def _NBumiFitBasicModel_counts(counts):
     """Fit basic negative binomial model (in-memory counts: genes x cells)."""
     vals = hidden_calc_vals(counts)
@@ -629,6 +631,7 @@ def _NBumiFitBasicModel_counts(counts):
         'sizes': size,
         'vals': vals
     }
+'''
 
 def NBumiFitBasicModel(
     cleaned_filename: str,
