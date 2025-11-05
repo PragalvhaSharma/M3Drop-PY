@@ -471,12 +471,12 @@ def NBumiFitModel(
 
 """
 def NBumiFitModel(*args, **kwargs):
-    """
+    '''
     GPU-accelerated NB fit for cleaned .h5ad data when called with
     (cleaned_filename: str, stats: dict, chunk_size: int = 5000).
     Falls back to original in-memory implementation when called with a
     single counts argument.
-    """
+    '''
     if len(args) == 1 and not kwargs:
         return _NBumiFitModel_counts(args[0])
 
