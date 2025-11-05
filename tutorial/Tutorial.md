@@ -9,23 +9,20 @@
     * Download the file: **All — Cells of the adult human heart, 486,134 cells.**
     * Rename the downloaded `.h5ad` file to `Human Heart.h5ad`.
 
-2.  **File Location:**
-    * Ensure the `Human Heart.h5ad` dataset is inside the M3DropGPU installation directory (the same folder as `core_pipeline.py`).
+2.  **Installation and Your Project File Location:**
+    * Install the package with 'pip install M3Drop' on your command prompt.
+    * Create a new folder that contains your dataset, `Human Heart.h5ad`, and `tutorial_core_pipeline.py`.
 
 3.  **Script Check:**
-    * Open `core_pipeline.py` and ensure the `DATASET_BASENAME` variable is correctly set to the name of the dataset.
+    * Open `tutorial_core_pipeline.py` and check that the `DATASET_BASENAME` variable is correctly set to the name of the dataset.
 
     ```python
-    DATASET_BASENAME = "Human Heart"
+    DATASET_BASENAME = "Human_Heart"
     ```
 
 ### 2. Execution
 
-Run the script from your terminal:
-
-```bash
-python core_pipeline.py
-```
+Run the script from your terminal.
 
 ### 3. Terminal Output
 
@@ -162,23 +159,20 @@ This plot visualizes the "Combined Dropout" results. Observations (Genes) in red
     * Download the file: **All — Cells of the adult human heart, 486,134 cells.**
     * Rename the downloaded `.h5ad` file to `Human Heart.h5ad`.
 
-2.  **File Location:**
-    * Ensure the `Human Heart.h5ad` dataset is inside the M3DropGPU installation directory (the same folder as `diagnostics_pipeline.py`).
+2.  **Installation and Your Project File Location:**
+    * Install the package with 'pip install M3Drop' on your command prompt.
+    * Create a new folder that contains your dataset, `Human Heart.h5ad`, and `tutorial_core_pipeline.py`.
 
 3.  **Script Check:**
-    * Open `diagnostics_pipeline.py` and ensure the `DATASET_BASENAME` variable is correctly set to the name of the dataset.
+    * Open `tutorial_core_pipeline.py` and check that the `DATASET_BASENAME` variable is correctly set to the name of the dataset.
 
     ```python
-    DATASET_BASENAME = "Human Heart"
+    DATASET_BASENAME = "Human_Heart"
     ```
 
 ### 2. Execution
 
-Run the script from your terminal:
-
-```bash
-python diagnostics_pipeline.py
-```
+Run the script from your terminal.
 
 ### 3. Terminal Output
 
