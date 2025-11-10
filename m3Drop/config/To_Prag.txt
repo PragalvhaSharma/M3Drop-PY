@@ -1,0 +1,13 @@
+Hello Prag,
+
+Here are the instructions:
+  1.  From this point on, we are going to use coreGPU.py, diagnosticsGPU.py, and normalizationGPU.py as the main source code. Don't worry about the other codes.
+      I have blocked out the entire NB_UMI.py so there's no conflict with any function names.
+  2.  Your task is as follows:
+      a.  All the functions in coreGPU.py, core_pipelineGPU.py, diagnosticsGPU.py, diagnostics_pipelineGPU.py, normalizationGPU.py, and normalization_pipelineGPU.py must be converted into a CPU compatible format.
+      b.  The goal is to give the users an option to choose if they wish to run the pipelines on a CPU or a GPU. Consequently, I have changed the names of the functions to function_nameGPU to indicate GPU.
+          I would like to ask you to do the same but with CPU (for example, ConvertDataSparseCPU)
+      c.  Once successfully completed, we should have 6 additional files: coreCPU.py, core_pipelineCPU.py, and so on. When this is done, you may package this and let me know, I will begin the testing.
+      d.  Once the testing is complete, it'll be up to me to re-write the tutorials, I'll get this done asap this time :)
+
+Let me know if you have any questions. 
