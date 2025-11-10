@@ -1,4 +1,4 @@
-
+'''
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
@@ -2361,4 +2361,4 @@ def NBumiConvertData(input_data, is_log=False, is_counts=False, pseudocount=1, p
             counts = np.ceil(counts)
             filtered_counts, _ = remove_undetected_genes(counts)
             return filtered_counts.astype(int)
-
+'''
