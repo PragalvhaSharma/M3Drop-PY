@@ -15,7 +15,7 @@ from coreCPU import (
     NBumiCombinedDropVolcanoCPU
 )
 
-RAW_DATA_FILE = "/Users/pragalvhasharma/Downloads/PragGOToDocuments/CompSci/myProjects/M3Drop/M3Drop-PY/m3Drop/Human_Heart.h5ad"
+RAW_DATA_FILE = " "
 
 DATASET_BASENAME = "Human_Heart"
 CLEANED_DATA_FILE = f"{DATASET_BASENAME}_cleaned.h5ad"

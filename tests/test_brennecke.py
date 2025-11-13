@@ -9,7 +9,7 @@ from m3Drop import ann_data_to_sparse_gene_matrix
 
 # Step 1: Load your AnnData (.h5ad) file
 # Replace with the actual path to your file if different.
-h5ad_file = "/Users/pragalvhasharma/Downloads/PragGOToDocuments/CompSci/myProjects/M3Drop/M3Drop-PY/m3Drop/Human_Heart.h5ad"
+h5ad_file = " "
 adata = sc.read_h5ad(h5ad_file)
 print("AnnData object loaded successfully:")
 print(adata)
