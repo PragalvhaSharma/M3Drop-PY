@@ -12,8 +12,9 @@ from coreCPU import (
 )
 from diagnosticsCPU import NBumiCompareModelsCPU, NBumiPlotDispVsMeanCPU
 
-RAW_DATA_FILE = "/Users/pragalvhasharma/Downloads/PragGOToDocuments/CompSci/myProjects/M3Drop/M3Drop-PY/m3Drop/Human_Heart.h5ad"
 DATASET_BASENAME = "Human_Heart"
+
+RAW_DATA_FILE = f"{DATASET_BASENAME}.h5ad"
 CLEANED_DATA_FILE = f"{DATASET_BASENAME}_cleaned.h5ad"
 STATS_OUTPUT_FILE = f"{DATASET_BASENAME}_stats.pkl"
 ADJUSTED_FIT_OUTPUT_FILE = f"{DATASET_BASENAME}_adjusted_fit.pkl"
