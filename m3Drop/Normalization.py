@@ -6,7 +6,7 @@ from scipy.sparse import issparse
 import warnings
 
 # Import NBumi functions
-from .NB_UMI import NBumiFitModel, hidden_calc_vals
+#from .NB_UMI import NBumiFitModel, hidden_calc_vals
 
 # Normalization Functions
 
