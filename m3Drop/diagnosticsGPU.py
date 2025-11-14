@@ -1,4 +1,4 @@
-from coreGPU import hidden_calc_valsGPU, NBumiFitModelGPU, NBumiFitDispVsMeanGPU
+from .coreGPU import hidden_calc_valsGPU, NBumiFitModelGPU, NBumiFitDispVsMeanGPU
 import cupy
 import numpy as np
 import anndata
@@ -481,3 +481,4 @@ def NBumiPlotDispVsMeanGPU(
 
     plt.close()
     print("FUNCTION: NBumiPlotDispVsMean() COMPLETE\n")
+
