@@ -141,7 +141,7 @@ from .scanpy import (
 
 # All public functions and classes
 __all__ = [
-    # Core functions
+    # Core functions
     'M3DropConvertData',
     'M3DropGetMarkers',
     'bg__calc_variables',
