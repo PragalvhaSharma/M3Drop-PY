@@ -24,8 +24,8 @@ from .Normalization import (
 
 # GPU-accelerated out-of-core residuals (optional dependency)
 from .NormalizationGPU import (
-    NBumiPearsonResiduals_h5ad_gpu,
-    NBumiPearsonResidualsApprox_h5ad_gpu,
+    NBumiPearsonResidualsGPU,
+    NBumiPearsonResidualsApproxGPU,
 )
 
 # Feature selection and extreme gene identification
