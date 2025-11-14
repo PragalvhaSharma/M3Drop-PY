@@ -153,8 +153,8 @@ __all__ = [
     'M3DropImputation',
 
     # Normalization and cleaning
-    'NBumiPearsonResiduals_h5ad_gpu',
-    'NBumiPearsonResidualsApprox_h5ad_gpu',
+    'NBumiPearsonResidualsGPU',
+    'NBumiPearsonResidualsApproxGPU',
 
     # Feature selection
     'M3DropFeatureSelection',
