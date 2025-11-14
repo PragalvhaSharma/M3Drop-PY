@@ -153,7 +153,6 @@ __all__ = [
     'M3DropImputation',
 
     # Normalization and cleaning
-    # (Functions from .Normalization are commented out, so they are not here)
     'NBumiPearsonResiduals_h5ad_gpu',
     'NBumiPearsonResidualsApprox_h5ad_gpu',
 
@@ -161,9 +160,6 @@ __all__ = [
     'M3DropFeatureSelection',
     'M3DropGetExtremes',
     'M3DropTestShift',
-
-    # NB-UMI modeling
-    # (Functions from .NB_UMI are commented out, so they are not here)
 
     # coreGPU
     'ConvertDataSparseGPU',
@@ -216,4 +212,9 @@ __all__ = [
     'MakeSimSparseDataHVar',
     'verify_sparse_h5ad',
     'verify_sparse_DE_h5ad',
-    'verify
+    'verify_cleaned_DE_h5ad',
+    
+    # Scanpy integration
+    'nbumi_normalize',
+    'm3drop_highly_variable_genes',
+]
