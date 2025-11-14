@@ -57,12 +57,12 @@ from .NB_UMI import (
 """
 
 from .coreGPU import (
-    ConvertDataSparseGPU
-    hidden_calc_valsGPU
-    NBumiFitModelGPU
-    NBumiFeatureSelectionHighVarGPU
-    NBumiFeatureSelectionCombinedDropGPU
-    NBumiCombinedDropVolcanoGPU
+    ConvertDataSparseGPU,
+    hidden_calc_valsGPU,
+    NBumiFitModelGPU,
+    NBumiFeatureSelectionHighVarGPU,
+    NBumiFeatureSelectionCombinedDropGPU,
+    NBumiCombinedDropVolcanoGPU,
 )
 
 # Curve fitting and dropout modeling
