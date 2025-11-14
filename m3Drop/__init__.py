@@ -142,77 +142,78 @@ from .scanpy import (
 # All public functions and classes
 __all__ = [
     # Core functions
-    'M3DropConvertData',
-    'M3DropGetMarkers',
-    'bg__calc_variables',
-    'bg__horizontal_residuals_MM_log10',
-    'compute_gene_statistics_h5ad',
-    'ann_data_to_sparse_gene_matrix',
+    'M3DropConvertData',
+    'M3DropGetMarkers',
+    'bg__calc_variables',
+    'bg__horizontal_residuals_MM_log10',
+    'compute_gene_statistics_h5ad',
+    'ann_data_to_sparse_gene_matrix',
 
-    # Imputation
-    'M3DropImputation',
+    # Imputation
+    'M3DropImputation',
 
-    # Normalization and cleaning
-    # 'M3DropCleanData',  <-- This was in your old __all__ but the import is commented out.
-    # 'NBumiPearsonResiduals',
-    # 'NBumiPearsonResidualsApprox',
-    'NBumiPearsonResiduals_h5ad_gpu',
-    'NBumiPearsonResidualsApprox_h5ad_gpu',
+    # Normalization and cleaning
+    # (Functions from .Normalization are commented out, so they are not here)
+    'NBumiPearsonResiduals_h5ad_gpu',
+    'NBumiPearsonResidualsApprox_h5ad_gpu',
 
-    # Feature selection
-    'M3DropFeatureSelection',
-    'M3DropGetExtremes',
-    'M3DropTestShift',
+    # Feature selection
+    'M3DropFeatureSelection',
+    'M3DropGetExtremes',
+    'M3DropTestShift',
 
-    # NB-UMI modeling (These are commented out, so we remove them from __all__)
-    # 'ConvertDataSparse',
-    # 'NBumiFitModel',
-    # ... (etc) ...
+    # NB-UMI modeling
+    # (Functions from .NB_UMI are commented out, so they are not here)
 
-    # Curve fitting
-    'M3DropDropoutModels',
-    'bg__fit_MM',
-    'bg__fit_logistic',
-    'bg__fit_ZIFA',
+    # coreGPU
+    'ConvertDataSparseGPU',
+    'hidden_calc_valsGPU',
+    'NBumiFitModelGPU',
+    'NBumiFeatureSelectionHighVarGPU',
+    'NBumiFeatureSelectionCombinedDropGPU',
+    'NBumiCombinedDropVolcanoGPU',
 
-    # Plotting
-    'M3DropExpressionHeatmap',
-    'M3DropGetHeatmapClusters',
-    'M3DropGetHeatmapNames',
-    'bg__dropout_plot_base',
-    'bg__add_model_to_plot',
-    'bg__highlight_genes',
-    'bg__expression_heatmap',
+    # Curve fitting
+    'M3DropDropoutModels',
+    'bg__fit_MM',
+    'bg__fit_logistic',
+    'bg__fit_ZIFA',
 
-    # Alternative feature selection
-    'Consensus_fs',
-    'gini_fs',
-    'cor_fs',
-    'irlba_pca_fs',
+    # Plotting
+    'M3DropExpressionHeatmap',
+    'M3DropGetHeatmapClusters',
+    'M3DropGetHeatmapNames',
+    'bg__dropout_plot_base',
+    'bg__add_model_to_plot',
+    'bg__highlight_genes',
+    'bg__expression_heatmap',
 
-    # HVG and co-expression
-    'NBumiHVG',
-    'NBumiCoexpression',
-    'BrenneckeGetVariableGenes',
+    # Alternative feature selection
+    'Consensus_fs',
+    'gini_fs',
+    'cor_fs',
+    'irlba_pca_fs',
 
-    # Visualization
-    'm3drop_three_set_venn',
+    # HVG and co-expression
+    'NBumiHVG',
+    'NBumiCoexpression',
+    'BrenneckeGetVariableGenes',
 
-    # Simulations
-    'NBumiSimulationTrifecta',
-    'M3DropSimulationTrifecta',
-    'Make_Sim',
-    # ... (all other simulation functions) ...
+    # Visualization
+    'm3drop_three_set_venn',
 
-    # Scanpy integration
-    'nbumi_normalize',
-    'm3drop_highly_variable_genes',
-
-    # GPU (This is the new, fixed part)
-    'ConvertDataSparseGPU',
-    'hidden_calc_valsGPU',
-    'NBumiFitModelGPU',
-    'NBumiFeatureSelectionHighVarGPU',
-    'NBumiFeatureSelectionCombinedDropGPU',
-    'NBumiCombinedDropVolcanoGPU'
-]
+    # Simulations
+    'NBumiSimulationTrifecta',
+    'M3DropSimulationTrifecta',
+    'Make_Sim',
+    'bg__default_mean2disp',
+    'bg__MakeSimData',
+    'bg__MakeSimDE',
+    'bg__MakeSimDVar',
+    'bg__MakeSimHVar',
+    'MakeSimSparseData',
+    'MakeSimSparseDataDE',
+    'MakeSimSparseDataHVar',
+    'verify_sparse_h5ad',
+    'verify_sparse_DE_h5ad',
+    'verify
