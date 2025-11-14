@@ -35,6 +35,7 @@ from .Extremes import (
     M3DropTestShift,
 )
 
+"""
 # Negative binomial UMI modeling
 from .NB_UMI import (
     ConvertDataSparse,
@@ -53,6 +54,7 @@ from .NB_UMI import (
     NBumiImputeNorm,
     hidden_calc_vals,
 )
+"""
 
 # Curve fitting and dropout modeling
 from .Curve_fitting import (
