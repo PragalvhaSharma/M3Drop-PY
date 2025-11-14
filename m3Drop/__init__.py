@@ -229,4 +229,7 @@ __all__ = [
     # Scanpy integration
     'nbumi_normalize',
     'm3drop_highly_variable_genes',
+
+    #GPU
+    'hidden_calc_valsGPU',
 ]
