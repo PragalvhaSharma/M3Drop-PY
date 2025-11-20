@@ -5,12 +5,12 @@ import time
 import matplotlib
 matplotlib.use('Agg')
 
-from coreCPU import (
+from .coreCPU import (
     ConvertDataSparseCPU,
     hidden_calc_valsCPU,
     NBumiFitModelCPU
 )
-from diagnosticsCPU import NBumiCompareModelsCPU, NBumiPlotDispVsMeanCPU
+from .diagnosticsCPU import NBumiCompareModelsCPU, NBumiPlotDispVsMeanCPU
 
 DATASET_BASENAME = "Human_Heart"
 

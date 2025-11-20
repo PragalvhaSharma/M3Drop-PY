@@ -1,4 +1,4 @@
-from coreCPU import hidden_calc_valsCPU, NBumiFitModelCPU, NBumiFitDispVsMeanCPU
+from .coreCPU import hidden_calc_valsCPU, NBumiFitModelCPU, NBumiFitDispVsMeanCPU
 import numpy as np
 import anndata
 import h5py

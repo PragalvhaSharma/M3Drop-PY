@@ -6,7 +6,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 
-from coreCPU import (
+from .coreCPU import (
     ConvertDataSparseCPU,
     hidden_calc_valsCPU,
     NBumiFitModelCPU,

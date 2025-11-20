@@ -2,8 +2,8 @@ import os
 import pickle
 import time
 
-from coreCPU import ConvertDataSparseCPU, hidden_calc_valsCPU, NBumiFitModelCPU
-from normalizationCPU import NBumiPearsonResidualsCPU, NBumiPearsonResidualsApproxCPU
+from .coreCPU import ConvertDataSparseCPU, hidden_calc_valsCPU, NBumiFitModelCPU
+from .normalizationCPU import NBumiPearsonResidualsCPU, NBumiPearsonResidualsApproxCPU
 
 DATASET_BASENAME = "healthy_liver"
 
