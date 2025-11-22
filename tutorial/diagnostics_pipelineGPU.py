@@ -7,20 +7,12 @@ import time
 import matplotlib
 matplotlib.use('Agg') # Use a non-interactive backend that only saves to files
 
-"""
-# Import functions from your two library files
-from core import (
-    ConvertDataSparse,
-    hidden_calc_vals,
-    NBumiFitModel
-)
-from diagnostics import NBumiCompareModels, NBumiPlotDispVsMean
-"""
-
 
 # --- 1. DEFINE FILE PATHS AND PARAMETERS ---
 # !! CHANGE THIS LINE TO SWITCH DATASETS !!
 DATASET_BASENAME = "Human_Heart"
+ROW_CHUNK = 2000
+
 
 # --- Input File ---
 RAW_DATA_FILE = f"{DATASET_BASENAME}.h5ad"
@@ -33,9 +25,6 @@ ADJUSTED_FIT_OUTPUT_FILE = f"{DATASET_BASENAME}_adjusted_fit.pkl"
 # --- Final Output ---
 DISP_VS_MEAN_PLOT_FILE = f"{DATASET_BASENAME}_disp_vs_mean.png"
 COMPARISON_PLOT_FILE = f"{DATASET_BASENAME}_NBumiCompareModels.png"
-
-# --- Processing Parameters ---
-ROW_CHUNK = 2000
 
 # --- 2. MAIN DIAGNOSTIC PIPELINE SCRIPT ---
 if __name__ == "__main__":
