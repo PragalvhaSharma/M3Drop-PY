@@ -15,9 +15,11 @@
 
 3.  **Script Check:**
     * Open `tutorial_core_pipeline.py` and check that the `DATASET_BASENAME` variable is correctly set to the name of the dataset.
+    * Ensure ROW_CHUNK is set appropriately to the available RAM of your hardware. If set too high, you will experience out of memory error.
 
     ```python
     DATASET_BASENAME = "Human_Heart"
+    ROW_CHUNK = 5000
     ```
 
 ### 2. Execution
@@ -164,10 +166,12 @@ This plot visualizes the "Combined Dropout" results. Observations (Genes) in red
     * Create a new folder that contains your dataset, `Human Heart.h5ad`, and `tutorial_core_pipeline.py`.
 
 3.  **Script Check:**
-    * Open `tutorial_diagnostics_pipeline.py` and check that the `DATASET_BASENAME` variable is correctly set to the name of the dataset.
+    * Open `tutorial_core_pipeline.py` and check that the `DATASET_BASENAME` variable is correctly set to the name of the dataset.
+    * Ensure ROW_CHUNK is set appropriately to the available RAM of your hardware. If set too high, you will experience out of memory error.
 
     ```python
     DATASET_BASENAME = "Human_Heart"
+    ROW_CHUNK = 5000
     ```
 
 ### 2. Execution
