@@ -6,6 +6,8 @@ import time
 # --- 1. DEFINE FILE PATHS AND PARAMETERS ---
 # !! CHANGE THIS LINE TO SWITCH DATASETS !!
 DATASET_BASENAME = "Human_Heart"
+CHUNK_SIZE = 5000
+
 
 # --- Input Files ---
 RAW_DATA_FILE = f"{DATASET_BASENAME}.h5ad"
@@ -19,8 +21,6 @@ FIT_OUTPUT_FILE = f"{DATASET_BASENAME}_fit.pkl"
 PEARSON_FULL_OUTPUT_FILE = f"{DATASET_BASENAME}_pearson_residuals.h5ad"
 PEARSON_APPROX_OUTPUT_FILE = f"{DATASET_BASENAME}_pearson_residuals_approx.h5ad"
 
-# --- Processing Parameters ---
-CHUNK_SIZE = 5000
 
 # --- 2. MAIN NORMALIZATION PIPELINE SCRIPT ---
 if __name__ == "__main__":
