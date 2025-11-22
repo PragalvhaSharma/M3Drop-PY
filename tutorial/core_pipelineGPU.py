@@ -4,9 +4,13 @@ import pickle
 import time
 import pandas as pd
 
+
 # !! CHANGE THIS LINE TO SWITCH DATASETS !!
 DATASET_BASENAME = "Human_Heart"
+ROW_CHUNK = 5000
 
+
+#########################################################################
 # Input file
 RAW_DATA_FILE = f"{DATASET_BASENAME}.h5ad"
 
@@ -17,9 +21,6 @@ FIT_OUTPUT_FILE = f"{DATASET_BASENAME}_fit.pkl"
 HIGH_VAR_OUTPUT_CSV = f"{DATASET_BASENAME}_high_variance_genes.csv"
 COMBINED_DROP_OUTPUT_CSV = f"{DATASET_BASENAME}_combined_dropout_genes.csv"
 VOLCANO_PLOT_FILE = f"{DATASET_BASENAME}_volcano_plot.png"
-
-# Processing parameters
-ROW_CHUNK = 5000
 
 # --- 2. MAIN PIPELINE SCRIPT ---
 if __name__ == "__main__":
