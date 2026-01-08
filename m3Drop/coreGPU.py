@@ -16,11 +16,83 @@ from statsmodels.stats.multitest import multipletests
 
 import pickle
 
+# --- HANDSHAKE PROTOCOL ---
+def get_optimal_chunk_size(filename: str, multiplier: float, is_dense: bool = False, reserve_ratio: float = 0.20) -> int:
+    """
+    HANDSHAKE PROTOCOL:
+    Queries GPU VRAM, checks file density, and calculates the maximum safe chunk size.
+    """
+    # 1. Hardware Interrogation
+    mempool = cupy.get_default_memory_pool()
+    mempool.free_all_blocks() # Flush fragmentation before check
+    mem_info = cupy.cuda.Device(0).mem_info
+    free_vram = mem_info[0]
+    total_vram = mem_info[1]
+    
+    # Safety Reserve (Hardware Overhead + Fragmentation Buffer)
+    safe_vram = free_vram * (1.0 - reserve_ratio)
+    
+    # 2. Telemetry (File Stats)
+    with h5py.File(filename, 'r') as f:
+        # Check for sparse structure
+        if 'X' not in f or 'indptr' not in f['X']:
+             print(" [ERROR] Invalid file structure. Aborting handshake.")
+             raise ValueError(f"File {filename} is not in expected sparse .h5ad format.")
+
+        x_group = f['X']
+        shape = x_group.attrs['shape']
+        n_cells, n_genes = shape[0], shape[1]
+        
+        # Get Global Density (Total Non-Zeros)
+        nnz = x_group['indptr'][-1]
+    
+    # 3. Calculation
+    bytes_per_float = 8 
+    bytes_per_int = 4
+    
+    if is_dense:
+        # DENSE MODE: Logic is strictly based on full matrix expansion (Broadcast)
+        row_cost = n_genes * bytes_per_float * multiplier
+        chunk_size = int(safe_vram / row_cost)
+        mode_str = "DENSE (BROADCAST)"
+        density_str = "N/A (Ignored)"
+        
+    else:
+        # SPARSE MODE: Logic is based on Non-Zero elements (Compressed)
+        avg_nnz_row = nnz / n_cells
+        row_cost = avg_nnz_row * (bytes_per_float + bytes_per_int) * multiplier
+        
+        if row_cost == 0: row_cost = 1 
+        
+        chunk_size = int(safe_vram / row_cost)
+        mode_str = "SPARSE (COMPRESSED)"
+        density_str = f"{nnz / (n_cells * n_genes):.5%}"
+
+    # Cap chunk size to total cells
+    if chunk_size > n_cells:
+        chunk_size = n_cells
+        
+    # 4. System Log Output
+    print(f"\n------------------------------------------------------------")
+    print(f" GPU MEMORY ALLOCATION LOG                  [{time.strftime('%H:%M:%S')}]")
+    print(f"------------------------------------------------------------")
+    print(f" FILE         : {os.path.basename(filename)}")
+    print(f" VRAM (TOTAL) : {total_vram / 1e9:.2f} GB")
+    print(f" VRAM (AVAIL) : {free_vram / 1e9:.2f} GB  (Target: {safe_vram / 1e9:.2f} GB)")
+    print(f"------------------------------------------------------------")
+    print(f" MODE         : {mode_str}")
+    print(f" MULTIPLIER   : {multiplier:.1f}x")
+    print(f" DENSITY      : {density_str}")
+    print(f"------------------------------------------------------------")
+    print(f" CHUNK SIZE   : {chunk_size:,} rows")
+    print(f"------------------------------------------------------------\n")
+    
+    return int(chunk_size)
+
 
 def ConvertDataSparseGPU(
     input_filename: str,
-    output_filename: str,
-    row_chunk_size: int = 5000
+    output_filename: str
 ):
     """
     Performs out-of-core data cleaning on a standard (cell, gene) sparse
@@ -30,9 +102,12 @@ def ConvertDataSparseGPU(
     start_time = time.perf_counter()
     print(f"FUNCTION: ConvertDataSparse() | FILE: {input_filename}")
 
+    # --- HANDSHAKE ---
+    # Multiplier 2.5: Input CSR + Output CSR + 0.5 overhead
+    row_chunk_size = get_optimal_chunk_size(input_filename, multiplier=2.5, is_dense=False)
+
     with h5py.File(input_filename, 'r') as f_in:
         x_group_in = f_in['X']
-        # Correctly unpack dimensions: (cells, genes)
         n_cells, n_genes = x_group_in.attrs['shape']
 
         # --- PASS 1: EFFICIENTLY FIND GENES TO KEEP ---
@@ -70,7 +145,6 @@ def ConvertDataSparseGPU(
 
         # Re-open the file to write the large data matrix chunk by chunk
         with h5py.File(output_filename, 'a') as f_out:
-            # We are overwriting the empty 'X' group created by .write_h5ad
             if 'X' in f_out:
                 del f_out['X']
             x_group_out = f_out.create_group('X')
@@ -89,36 +163,29 @@ def ConvertDataSparseGPU(
                 end_row = min(i + row_chunk_size, n_cells)
                 print(f"Phase [2/2]: Processing: {end_row} of {n_cells} cells.", end='\r')
 
-                # Read a chunk of rows from the original file
                 start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
                 data_slice = h5_data[start_idx:end_idx]
                 indices_slice = h5_indices[start_idx:end_idx]
                 indptr_slice = h5_indptr[i:end_row+1] - h5_indptr[i]
 
-                # Create a sparse matrix for the chunk
                 chunk = sp_csr_matrix((data_slice, indices_slice, indptr_slice), shape=(end_row-i, n_genes))
 
-                # Filter the chunk by removing unwanted columns (genes)
                 filtered_chunk = chunk[:, genes_to_keep_mask]
                 filtered_chunk.data = np.ceil(filtered_chunk.data).astype('float32')
 
-                # Append the filtered data to the new file
                 out_data.resize(current_nnz + filtered_chunk.nnz, axis=0)
                 out_data[current_nnz:] = filtered_chunk.data
 
                 out_indices.resize(current_nnz + filtered_chunk.nnz, axis=0)
                 out_indices[current_nnz:] = filtered_chunk.indices
 
-                # Append the new row pointers
                 new_indptr_list = filtered_chunk.indptr[1:].astype(np.int64) + current_nnz
                 out_indptr[i + 1 : end_row + 1] = new_indptr_list
                 
                 current_nnz += filtered_chunk.nnz
 
-            # Set the final attributes for the new sparse matrix
             x_group_out.attrs['encoding-type'] = 'csr_matrix'
             x_group_out.attrs['encoding-version'] = '0.1.0'
-            # Write the correct final shape: (n_cells, n_genes_to_keep)
             x_group_out.attrs['shape'] = np.array([n_cells, n_genes_to_keep], dtype='int64')
         print(f"\nPhase [2/2]: COMPLETE | Output: {output_filename} {' ' * 50}")
 
@@ -126,27 +193,23 @@ def ConvertDataSparseGPU(
     print(f"Total time: {end_time - start_time:.2f} seconds.\n")
 
 def hidden_calc_valsGPU(
-    filename: str,
-    chunk_size: int = 5000
+    filename: str
 ) -> dict:
     """
     Calculates key statistics from a large, sparse (cell, gene) .h5ad file
     using a memory-safe, GPU-accelerated, single-pass algorithm.
-
-    Args:
-        filename (str): Path to the cleaned sparse .h5ad file.
-        chunk_size (int): The number of rows (cells) to process at a time.
-
-    Returns:
-        dict: A dictionary containing the calculated statistics.
     """
     start_time = time.perf_counter()
     print(f"FUNCTION: hidden_calc_vals() | FILE: {filename}")
 
+    # --- HANDSHAKE ---
+    # Multiplier 3.0: Input CSR + Casts + Atomic Ops overhead
+    chunk_size = get_optimal_chunk_size(filename, multiplier=3.0, is_dense=False)
+
     # --- 1. Initialization ---
     adata_meta = anndata.read_h5ad(filename, backed='r')
     print("Phase [1/3]: Finding nc and ng...")
-    nc, ng = adata_meta.shape # nc = cells (rows), ng = genes (columns)
+    nc, ng = adata_meta.shape 
     print(f"Phase [1/3]: COMPLETE")
 
     # --- CPU arrays for cell (row) stats ---
@@ -169,26 +232,21 @@ def hidden_calc_valsGPU(
             end_row = min(i + chunk_size, nc)
             print(f"Phase [2/3]: Processing: {end_row} of {nc} cells.", end='\r')
 
-            # Read CSR data for the current chunk from disk
             start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
             data_slice = h5_data[start_idx:end_idx]
             indices_slice = h5_indices[start_idx:end_idx]
             indptr_slice = h5_indptr[i:end_row+1] - h5_indptr[i]
 
             # --- Move chunk to GPU ---
-            # By calling .copy(), we ensure the memory buffer sent to CuPy is clean
-            # and not subject to pre-existing memory maps from h5py.
             data_gpu = cupy.asarray(data_slice.copy(), dtype=cupy.float32)
             indices_gpu = cupy.asarray(indices_slice.copy())
             indptr_gpu = cupy.asarray(indptr_slice.copy())
 
-            # Create a CuPy sparse matrix for the chunk
             chunk_gpu = cp_csr_matrix((data_gpu, indices_gpu, indptr_gpu), shape=(end_row-i, ng))
 
             # --- CALCULATE CELL (ROW) STATS ON GPU ---
             tis[i:end_row] = chunk_gpu.sum(axis=1).get().flatten()
             cell_non_zeros_chunk = cupy.diff(indptr_gpu)
-            # ▼▼▼ THIS IS THE CORRECTED LINE ▼▼▼
             cell_non_zeros[i:end_row] = cell_non_zeros_chunk.get()
 
             # --- UPDATE GENE (COLUMN) STATS ON GPU ---
@@ -196,6 +254,10 @@ def hidden_calc_valsGPU(
             
             unique_indices_gpu, counts_gpu = cupy.unique(indices_gpu, return_counts=True)
             cupy.add.at(gene_non_zeros_gpu, unique_indices_gpu, counts_gpu)
+            
+            # Memory Cleanup
+            del data_gpu, indices_gpu, indptr_gpu, chunk_gpu
+            cupy.get_default_memory_pool().free_all_blocks()
 
     # --- 3. Finalization ---
     tjs = cupy.asnumpy(tjs_gpu)
@@ -224,12 +286,15 @@ def hidden_calc_valsGPU(
 
 def NBumiFitModelGPU(
     cleaned_filename: str,
-    stats: dict,
-    chunk_size: int = 5000
+    stats: dict
 ) -> dict:
 
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiFitModel() | FILE: {cleaned_filename}")
+    
+    # --- HANDSHAKE ---
+    # Multiplier 4.0: High intensity sparse math (squared terms, expectations)
+    chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=4.0, is_dense=False)
     
     tjs = stats['tjs'].values
     tis = stats['tis'].values
@@ -263,7 +328,7 @@ def NBumiFitModelGPU(
             if start_idx == end_idx:
                 continue
             
-            # Load ALL data for this chunk at once - let GPU handle it
+            # Load ALL data for this chunk at once
             data_gpu = cupy.asarray(h5_data[start_idx:end_idx], dtype=cupy.float64)
             indices_gpu = cupy.asarray(h5_indices[start_idx:end_idx])
             indptr_gpu = cupy.asarray(h5_indptr[i:end_row+1] - h5_indptr[i])
@@ -271,18 +336,13 @@ def NBumiFitModelGPU(
             # GPU-accelerated operations
             cupy.add.at(sum_x_sq_gpu, indices_gpu, data_gpu**2)
             
-            # ▼▼▼ CORRECTED CODE BLOCK START ▼▼▼
-            # Efficient cell index calculation using a robust cumsum method
+            # Efficient cell index calculation
             nnz_in_chunk = indptr_gpu[-1].item()
-            # Create an array that marks the start of each new cell's data
             cell_boundary_markers = cupy.zeros(nnz_in_chunk, dtype=cupy.int32)
-            # indptr_gpu[:-1] gives the start indices of each cell's non-zero elements
             if len(indptr_gpu) > 1:
                 cell_boundary_markers[indptr_gpu[:-1]] = 1
-            # A cumulative sum will create a stepped array where each step corresponds to a cell index
             cell_indices_chunk = cupy.cumsum(cell_boundary_markers, axis=0) - 1
             cell_indices_gpu = cell_indices_chunk + i
-            # ▲▲▲ CORRECTED CODE BLOCK END ▲▲▲
             
             # Vectorized calculation
             tis_per_nz = tis_gpu[cell_indices_gpu]
@@ -294,9 +354,8 @@ def NBumiFitModelGPU(
             del data_gpu, indices_gpu, indptr_gpu, cell_indices_gpu
             del tis_per_nz, tjs_per_nz, term_vals
             
-            # Only clear memory if actually needed
-            if i % (chunk_size * 10) == 0:
-                cupy.get_default_memory_pool().free_all_blocks()
+            # Free memory periodically
+            cupy.get_default_memory_pool().free_all_blocks()
     
     print(f"Phase [2/3]: COMPLETE {' ' * 50}")
     
@@ -332,35 +391,21 @@ def NBumiFitDispVsMeanGPU(fit, suppress_plot=True):
     size_g = fit['sizes'].values
     tjs = vals['tjs'].values
 
-    # --- CORRECTED LINES START HERE ---
-    # Calculate mean expression before filtering.
     mean_expression = tjs / vals['nc']
     
-    # Create a boolean mask to filter for valid data points.
-    # 1. size_g must be finite and within a reasonable range (e.g., less than a large number like 1e5 or 1e6 to avoid the artifact cluster).
-    # 2. mean_expression must be greater than the specified threshold (1e-3) to remove low-expression noise.
-    # 3. size_g must be positive.
     forfit = (np.isfinite(size_g)) & (size_g < 1e6) & (mean_expression > 1e-3) & (size_g > 0)
     
-    # Further filter for highly expressed genes if there are enough points.
-    # This part of the logic is from the original M3Drop implementation and is optional but can improve the fit.
     log2_mean_expr = np.log2(mean_expression, where=(mean_expression > 0))
     higher = log2_mean_expr > 4
     if np.sum(higher & forfit) > 2000:
         forfit = higher & forfit
-    # --- CORRECTED LINES END HERE ---
 
-    # Prepare data for regression using the corrected filtered NumPy arrays
     y = np.log(size_g[forfit])
     x = np.log(mean_expression[forfit])
     
-    # Add a constant for the intercept term
     X = sm.add_constant(x)
-
-    # Fit the linear model
     model = sm.OLS(y, X).fit()
     
-    # Optionally, create the diagnostic plot
     if not suppress_plot:
         plt.figure(figsize=(7, 6))
         plt.scatter(x, y, alpha=0.5, label="Data Points")
@@ -372,32 +417,20 @@ def NBumiFitDispVsMeanGPU(fit, suppress_plot=True):
         plt.grid(True)
         plt.show()
 
-    # Return the regression coefficients
     return model.params
 
 def NBumiFeatureSelectionHighVarGPU(fit: dict) -> pd.DataFrame:
     """
     Selects features (genes) with higher variance than expected.
-
-    This function is already memory-efficient as it only operates on the
-    small summary arrays contained within the 'fit' object.
-
-    Args:
-        fit (dict): The 'fit' object from NBumiFitModel.
-
-    Returns:
-        pd.DataFrame: A DataFrame of genes sorted by their residual,
-                      indicating how much more variable they are than expected.
+    This function is CPU bound and does not require chunking.
     """
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiFeatureSelectionHighVar()")
 
-    # This is a fast, in-memory call
     print("Phase [1/1]: Calculating residuals for high variance selection...")
     vals = fit['vals']
     coeffs = NBumiFitDispVsMeanGPU(fit, suppress_plot=True)
 
-    # --- 2. Perform Calculations (CPU is optimal) ---
     mean_expression = vals['tjs'].values / vals['nc']
 
     with np.errstate(divide='ignore', invalid='ignore'):
@@ -424,16 +457,19 @@ def NBumiFeatureSelectionHighVarGPU(fit: dict) -> pd.DataFrame:
 def NBumiFeatureSelectionCombinedDropGPU(
     fit: dict,
     cleaned_filename: str,
-    chunk_size: int = 5000,
     method="fdr_bh",
     qval_thresh=0.05
 ) -> pd.DataFrame:
     """
-    Selects features with a significantly higher dropout rate than expected,
-    using an out-of-core, GPU-accelerated approach.
+    Selects features with a significantly higher dropout rate than expected.
     """
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiFeatureSelectionCombinedDrop() | FILE: {cleaned_filename}")
+
+    # --- HANDSHAKE ---
+    # Multiplier 3.0: 3x Full Dense Arrays (mu_chunk, p_is, p_var)
+    # is_dense=True is CRITICAL here. This operation is dense broadcast.
+    chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=3.0, is_dense=True)
 
     # --- 1. Initialization and In-Memory Prep ---
     print("Phase [1/3]: Initializing arrays and calculating expected dispersion...")
@@ -464,6 +500,7 @@ def NBumiFeatureSelectionCombinedDropGPU(
 
         tis_chunk_gpu = tis_gpu[i:end_col]
 
+        # BROADCAST OPERATION: Creates Dense Matrix (ng, chunk_size)
         mu_chunk_gpu = tjs_gpu[:, cupy.newaxis] * tis_chunk_gpu[cupy.newaxis, :] / total
         
         p_is_chunk_gpu = cupy.power(1 + mu_chunk_gpu / exp_size_gpu[:, cupy.newaxis], -exp_size_gpu[:, cupy.newaxis])
@@ -472,6 +509,10 @@ def NBumiFeatureSelectionCombinedDropGPU(
         
         p_sum_gpu += p_is_chunk_gpu.sum(axis=1)
         p_var_sum_gpu += p_var_is_chunk_gpu.sum(axis=1)
+        
+        # Aggressive memory cleanup for dense loop
+        del mu_chunk_gpu, p_is_chunk_gpu, p_var_is_chunk_gpu, tis_chunk_gpu
+        cupy.get_default_memory_pool().free_all_blocks()
     
     print(f"Phase [2/3]: COMPLETE {' ' * 50}")
 
@@ -521,17 +562,6 @@ def NBumiCombinedDropVolcanoGPU(
 ):
     """
     Generates a volcano plot from the results of feature selection.
-
-    Args:
-        results_df (pd.DataFrame): The DataFrame from NBumiFeatureSelectionCombinedDrop.
-        qval_thresh (float): The q-value threshold for significance.
-        effect_size_thresh (float): The effect size threshold for significance.
-        top_n_genes (int): The number of top genes to label on the plot.
-        suppress_plot (bool): If True, the plot will not be displayed on screen.
-        plot_filename (str, optional): Path to save the plot. If None, plot is not saved.
-
-    Returns:
-        matplotlib.axes.Axes: The Axes object for the plot.
     """
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiCombinedDropVolcano()")
@@ -541,12 +571,10 @@ def NBumiCombinedDropVolcanoGPU(
     
     df = results_df.copy()
 
-    # Calculate -log10(q-value), handling cases where q-value is 0
     non_zero_min = df[df['q.value'] > 0]['q.value'].min()
     df['q.value'] = df['q.value'].replace(0, non_zero_min)
     df['-log10_qval'] = -np.log10(df['q.value'])
 
-    # Categorize genes for coloring
     df['color'] = 'grey'
     sig_up = (df['q.value'] < qval_thresh) & (df['effect_size'] > effect_size_thresh)
     sig_down = (df['q.value'] < qval_thresh) & (df['effect_size'] < -effect_size_thresh)
@@ -560,27 +588,23 @@ def NBumiCombinedDropVolcanoGPU(
 
     plt.figure(figsize=(10, 8))
     
-    # Create the scatter plot
     plt.scatter(df['effect_size'], df['-log10_qval'], c=df['color'], s=10, alpha=0.6)
 
-    # Add threshold lines
     plt.axvline(x=effect_size_thresh, linestyle='--', color='grey', linewidth=0.8)
     plt.axvline(x=-effect_size_thresh, linestyle='--', color='grey', linewidth=0.8)
     plt.axhline(y=-np.log10(qval_thresh), linestyle='--', color='grey', linewidth=0.8)
 
-    # Label top genes
     top_genes = df.nsmallest(top_n_genes, 'q.value')
     for i, row in top_genes.iterrows():
         plt.text(row['effect_size'], row['-log10_qval'], row['Gene'],
                  fontsize=9, ha='left', va='bottom', alpha=0.8)
 
-    # Final styling
     plt.title('Volcano Plot of Dropout Feature Selection')
     plt.xlabel('Effect Size (Observed - Expected Dropout Rate)')
     plt.ylabel('-log10 (Adjusted p-value)')
     plt.grid(True, linestyle='--', alpha=0.3)
     
-    ax = plt.gca() # Get current axes
+    ax = plt.gca()
 
     if plot_filename:
         plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
