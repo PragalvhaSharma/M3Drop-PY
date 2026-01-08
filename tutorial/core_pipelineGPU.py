@@ -7,7 +7,6 @@ import pandas as pd
 
 # !! CHANGE THIS LINE TO SWITCH DATASETS !!
 DATASET_BASENAME = "Human_Heart"
-ROW_CHUNK = 5000
 
 
 #########################################################################
@@ -32,8 +31,7 @@ if __name__ == "__main__":
     if not os.path.exists(CLEANED_DATA_FILE):
         M3Drop.ConvertDataSparseGPU(
             input_filename=RAW_DATA_FILE,
-            output_filename=CLEANED_DATA_FILE,
-            row_chunk_size=ROW_CHUNK
+            output_filename=CLEANED_DATA_FILE
         )
     else:
         print(f"STATUS: Found existing file '{CLEANED_DATA_FILE}'. Skipping.\n")
@@ -42,8 +40,7 @@ if __name__ == "__main__":
     print("--- PIPELINE STAGE 2: STATISTICS CALCULATION ---")
     if not os.path.exists(STATS_OUTPUT_FILE):
         stats = M3Drop.hidden_calc_valsGPU(
-            filename=CLEANED_DATA_FILE,
-            chunk_size=ROW_CHUNK
+            filename=CLEANED_DATA_FILE
         )
         print(f"STATUS: Saving statistics to '{STATS_OUTPUT_FILE}'...")
         with open(STATS_OUTPUT_FILE, 'wb') as f:
@@ -59,11 +56,8 @@ if __name__ == "__main__":
     print("--- PIPELINE STAGE 3: MODEL FITTING ---")
     if not os.path.exists(FIT_OUTPUT_FILE):
         fit_results = M3Drop.NBumiFitModelGPU(
-            cleaned_filename = CLEANED_DATA_FILE,
-            stats = stats,
-            #CLEANED_DATA_FILE,
-            #stats,
-            chunk_size=ROW_CHUNK
+            cleaned_filename=CLEANED_DATA_FILE,
+            stats=stats
         )
         print(f"STATUS: Saving fit results to '{FIT_OUTPUT_FILE}'...")
         with open(FIT_OUTPUT_FILE, 'wb') as f:
