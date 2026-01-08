@@ -5,28 +5,27 @@
 # --- CPU Functions ---
 
 # From coreCPU.py
-from .coreCPU import (
-    ConvertDataSparseCPU,
-    hidden_calc_valsCPU,
-    NBumiFitModelCPU,
-    NBumiFitDispVsMeanCPU,
-    NBumiFeatureSelectionHighVarCPU,
-    NBumiFeatureSelectionCombinedDropCPU,
-    NBumiCombinedDropVolcanoCPU,
+from .coreGPU import (
+    ConvertDataSparseGPU,
+    hidden_calc_valsGPU,
+    NBumiFitModelGPU,
+    NBumiFitDispVsMeanGPU,
+    NBumiFeatureSelectionHighVarGPU,
+    NBumiFeatureSelectionCombinedDropGPU,
+    NBumiCombinedDropVolcanoGPU,
+    get_optimal_chunk_size
 )
 
-# From diagnosticsCPU.py
-from .diagnosticsCPU import (
-    NBumiFitBasicModelCPU,
-    NBumiCheckFitFSCPU,
-    NBumiCompareModelsCPU,
-    NBumiPlotDispVsMeanCPU,
+from .diagnosticsGPU import (
+    NBumiFitBasicModelGPU,
+    NBumiCheckFitFSGPU,
+    NBumiCompareModelsGPU,
+    NBumiPlotDispVsMeanGPU
 )
 
-# From normalizationCPU.py
-from .normalizationCPU import (
-    NBumiPearsonResidualsCPU,
-    NBumiPearsonResidualsApproxCPU,
+from .normalizationGPU import (
+    NBumiPearsonResidualsGPU,
+    NBumiPearsonResidualsApproxGPU
 )
 
 
