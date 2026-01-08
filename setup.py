@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name="M3Drop",
-    version="0.4.1",  # <--- BUMP VERSION to fix the crash
+    version="0.4.2",  # <--- BUMP VERSION
     author="Tallulah Andrews, Anthony Son, Pragalvha Sharma",
     author_email="tandrew6@uwo.ca, json59@uwo.ca, pragalvhasharma@gmail.com",
     description="A Python implementation of the M3Drop single-cell RNA-seq analysis tool.",
@@ -23,22 +23,21 @@ setuptools.setup(
     ],
     python_requires='>=3.8',
     install_requires=[
-        "anndata>=0.8.0",          
-        "h5py>=3.8.0",             
-        "matplotlib>=3.5.0",       # Relaxed: Fixes the Supercomputer crash
+        "anndata>=0.8.0",
+        "h5py>=3.8.0",
+        "matplotlib>=3.5.0",
         "matplotlib-venn>=0.11",
         "memory_profiler>=0.60.0",
-        "numpy>=1.21.0",           
-        "pandas>=1.5.0",           # Relaxed: Fixes the dependency conflict
+        "numpy>=1.21.0,<1.27",      # <--- HARD CAP: Forces Numpy 1.26.x or older
+        "pandas>=1.5.0,<2.2",       # <--- HARD CAP: Prevents new pandas conflicts
         "scanpy>=1.9.0",
-        "scikit-learn>=1.0.0",
-        "scipy>=1.8.0",
+        "scikit-learn>=1.0.0,<1.4", # <--- HARD CAP: Forces older, safe sklearn
+        "scipy>=1.8.0,<1.12",       # <--- HARD CAP: Prevents build failures
         "seaborn>=0.11.0",
         "statsmodels>=0.13.0",
     ],
-    # --- ADD THIS BLOCK FOR CUPY ---
     extras_require={
-        "gpu": ["cupy-cuda12x"],  # Users can install this optionally
+        "gpu": ["cupy-cuda12x"],
     },
     include_package_data=True,
     package_data={
