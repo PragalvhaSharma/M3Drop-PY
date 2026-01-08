@@ -2,16 +2,15 @@ import m3Drop as M3Drop
 import os
 import pickle
 import time
-
-# --- ADD THESE TWO LINES TO PREVENT PLOT POP-UPS ---
 import matplotlib
-matplotlib.use('Agg') # Use a non-interactive backend that only saves to files
 
+# --- PREVENT PLOT POP-UPS ---
+# Use a non-interactive backend that only saves to files
+matplotlib.use('Agg') 
 
 # --- 1. DEFINE FILE PATHS AND PARAMETERS ---
 # !! CHANGE THIS LINE TO SWITCH DATASETS !!
 DATASET_BASENAME = "Human_Heart"
-ROW_CHUNK = 2000
 
 
 # --- Input File ---
@@ -31,23 +30,21 @@ if __name__ == "__main__":
     pipeline_start_time = time.time()
     print(f"--- Initializing M3Drop+ Diagnostic Pipeline for {RAW_DATA_FILE} ---\n")
 
-    # STAGE 1: Data Cleaning (from core.py)
+    # STAGE 1: Data Cleaning
     print("--- PIPELINE STAGE 1: DATA CLEANING ---")
     if not os.path.exists(CLEANED_DATA_FILE):
         M3Drop.ConvertDataSparseGPU(
             input_filename=RAW_DATA_FILE,
-            output_filename=CLEANED_DATA_FILE,
-            row_chunk_size=ROW_CHUNK
+            output_filename=CLEANED_DATA_FILE
         )
     else:
         print(f"STATUS: Found existing file '{CLEANED_DATA_FILE}'. Skipping.\n")
 
-    # STAGE 2: Statistics Calculation (from core.py)
+    # STAGE 2: Statistics Calculation
     print("--- PIPELINE STAGE 2: STATISTICS CALCULATION ---")
     if not os.path.exists(STATS_OUTPUT_FILE):
         stats = M3Drop.hidden_calc_valsGPU(
-            filename=CLEANED_DATA_FILE,
-            chunk_size=ROW_CHUNK
+            filename=CLEANED_DATA_FILE
         )
         print(f"STATUS: Saving statistics to '{STATS_OUTPUT_FILE}'...")
         with open(STATS_OUTPUT_FILE, 'wb') as f:
@@ -59,13 +56,12 @@ if __name__ == "__main__":
             stats = pickle.load(f)
         print("STATUS: COMPLETE\n")
 
-    # STAGE 3: Adjusted Model Fitting (from core.py)
+    # STAGE 3: Adjusted Model Fitting
     print("--- PIPELINE STAGE 3: ADJUSTED MODEL FITTING ---")
     if not os.path.exists(ADJUSTED_FIT_OUTPUT_FILE):
         fit_adjust = M3Drop.NBumiFitModelGPU(
             cleaned_filename=CLEANED_DATA_FILE,
-            stats=stats,
-            chunk_size=ROW_CHUNK
+            stats=stats
         )
         print(f"STATUS: Saving adjusted fit to '{ADJUSTED_FIT_OUTPUT_FILE}'...")
         with open(ADJUSTED_FIT_OUTPUT_FILE, 'wb') as f:
@@ -79,22 +75,19 @@ if __name__ == "__main__":
 
     # STAGE 4: DISPERSION VS. MEAN PLOT
     print("--- PIPELINE STAGE 4: DISPERSION VS. MEAN PLOT ---")
-    # By setting the backend at the top, we no longer need suppress_plot=True.
-    # The plot will not pop up, but it will be saved if a filename is given.
     M3Drop.NBumiPlotDispVsMeanGPU(
         fit=fit_adjust,
         plot_filename=DISP_VS_MEAN_PLOT_FILE
     )
 
-    # STAGE 5: Run Full Model Comparison (from diagnostics.py)
+    # STAGE 5: Run Full Model Comparison
     print("--- PIPELINE STAGE 5: MODEL COMPARISON ---")
     M3Drop.NBumiCompareModelsGPU(
         raw_filename=RAW_DATA_FILE,
         cleaned_filename=CLEANED_DATA_FILE,
         stats=stats,
         fit_adjust=fit_adjust,
-        plot_filename=COMPARISON_PLOT_FILE,
-        chunk_size=ROW_CHUNK
+        plot_filename=COMPARISON_PLOT_FILE
     )
 
     pipeline_end_time = time.time()
