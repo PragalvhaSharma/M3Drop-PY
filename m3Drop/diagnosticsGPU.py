@@ -1,4 +1,4 @@
-from .coreGPU import hidden_calc_valsGPU, NBumiFitModelGPU, NBumiFitDispVsMeanGPU
+from .coreGPU import hidden_calc_valsGPU, NBumiFitModelGPU, NBumiFitDispVsMeanGPU, get_optimal_chunk_size
 import cupy
 import numpy as np
 import anndata
@@ -19,8 +19,7 @@ from statsmodels.stats.multitest import multipletests
 def NBumiFitBasicModelGPU(
     cleaned_filename: str,
     stats: dict,
-    is_logged=False,
-    chunk_size: int = 5000
+    is_logged=False
 ) -> dict:
     """
     Fits a simpler, unadjusted NB model out-of-core using a GPU-accelerated
@@ -28,6 +27,10 @@ def NBumiFitBasicModelGPU(
     """
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiFitBasicModel() | FILE: {cleaned_filename}")
+
+    # --- HANDSHAKE ---
+    # Multiplier 4.0: Sparse variance calculation (Sum of Squares + Expectation arrays)
+    chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=4.0, is_dense=False)
 
     # --- Phase 1: Initialization ---
     print("Phase [1/2]: Initializing parameters and arrays on GPU...")
@@ -54,42 +57,21 @@ def NBumiFitBasicModelGPU(
             if start_idx == end_idx:
                 continue
             
-            # Process in smaller sub-chunks if needed
-            max_elements = 5_000_000  # Process max 5M elements at a time
+            # Load chunk
+            data_slice = h5_data[start_idx:end_idx]
+            indices_slice = h5_indices[start_idx:end_idx]
+
+            data_gpu = cupy.asarray(data_slice, dtype=cupy.float64)
+            indices_gpu = cupy.asarray(indices_slice)
+
+            # Accumulate the sum of squares for each gene
+            cupy.add.at(sum_x_sq_gpu, indices_gpu, data_gpu**2)
             
-            if end_idx - start_idx > max_elements:
-                # Process in sub-chunks
-                for sub_start in range(start_idx, end_idx, max_elements):
-                    sub_end = min(sub_start + max_elements, end_idx)
-                    
-                    data_slice = h5_data[sub_start:sub_end]
-                    indices_slice = h5_indices[sub_start:sub_end]
-                    
-                    data_gpu = cupy.asarray(data_slice, dtype=cupy.float64)
-                    indices_gpu = cupy.asarray(indices_slice)
-                    
-                    # Accumulate the sum of squares for each gene
-                    cupy.add.at(sum_x_sq_gpu, indices_gpu, data_gpu**2)
-                    
-                    # Free GPU memory
-                    del data_gpu, indices_gpu
-                    cupy.get_default_memory_pool().free_all_blocks()
-            else:
-                # Original processing for smaller chunks
-                data_slice = h5_data[start_idx:end_idx]
-                indices_slice = h5_indices[start_idx:end_idx]
-
-                data_gpu = cupy.asarray(data_slice, dtype=cupy.float64)
-                indices_gpu = cupy.asarray(indices_slice)
-
-                # Accumulate the sum of squares for each gene
-                cupy.add.at(sum_x_sq_gpu, indices_gpu, data_gpu**2)
-                
-                # Clean up
-                del data_gpu, indices_gpu
-                cupy.get_default_memory_pool().free_all_blocks()
+            # Clean up
+            del data_gpu, indices_gpu
+            cupy.get_default_memory_pool().free_all_blocks()
     
-    print(f"Phase [2/2]: COMPLETE                                       ")
+    print(f"Phase [2/2]: COMPLETE{' ' * 50}")
 
     # --- Final calculations on GPU ---
     if is_logged:
@@ -125,15 +107,19 @@ def NBumiFitBasicModelGPU(
 def NBumiCheckFitFSGPU(
     cleaned_filename: str,
     fit: dict,
-    chunk_size: int = 5000,
     suppress_plot=False,
     plot_filename=None
 ) -> dict:
     """
-    FIXED VERSION - No cupy.errstate, proper GPU computation.
+    Calculates expected dropout rates vs observed dropout rates.
     """
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiCheckFitFS() | FILE: {cleaned_filename}")
+
+    # --- HANDSHAKE ---
+    # Multiplier 3.0: 3x Full Dense Arrays. 
+    # CRITICAL: is_dense=True. This function performs a dense broadcast (outer product).
+    chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=3.0, is_dense=True)
 
     # --- Phase 1: Initialization ---
     print("Phase [1/2]: Initializing parameters and arrays on GPU...")
@@ -159,24 +145,13 @@ def NBumiCheckFitFSGPU(
     # --- Phase 2: Calculate Expected Dropouts ---
     print("Phase [2/2]: Calculating expected dropouts from data chunks...")
     
-    # Determine optimal chunk size
-    mempool = cupy.get_default_memory_pool()
-    free_mem_mb = cupy.cuda.Device().mem_info[0] / (1024**2)
-    
-    # Estimate memory per cell: 8 bytes * ng * 2 arrays
-    bytes_per_cell = ng * 8 * 2
-    optimal_chunk = min(chunk_size, int(free_mem_mb * 0.4 * 1024**2 / bytes_per_cell))
-    optimal_chunk = max(100, optimal_chunk)
-    
-    print(f"  Using adaptive chunk size: {optimal_chunk} (original: {chunk_size})")
-    
-    for i in range(0, nc, optimal_chunk):
-        end_col = min(i + optimal_chunk, nc)
+    for i in range(0, nc, chunk_size):
+        end_col = min(i + chunk_size, nc)
         print(f"Phase [2/2]: Processing: {end_col} of {nc} cells.", end='\r')
 
         tis_chunk_gpu = tis_gpu[i:end_col]
 
-        # Standard calculation without errstate
+        # BROADCAST OPERATION: Creates Dense Matrix (ng, chunk_size)
         mu_chunk_gpu = tjs_gpu[:, cupy.newaxis] * tis_chunk_gpu[cupy.newaxis, :] / total
         
         # Calculate p_is directly - CuPy handles overflow internally
@@ -192,10 +167,7 @@ def NBumiCheckFitFSGPU(
         
         # Clean up
         del mu_chunk_gpu, p_is_chunk_gpu, base, tis_chunk_gpu
-        
-        # Periodic memory cleanup
-        if (i // optimal_chunk) % 10 == 0:
-            mempool.free_all_blocks()
+        cupy.get_default_memory_pool().free_all_blocks()
 
     print(f"Phase [2/2]: COMPLETE{' ' * 50}")
 
@@ -252,15 +224,18 @@ def NBumiCompareModelsGPU(
     cleaned_filename: str,
     stats: dict,
     fit_adjust: dict,
-    chunk_size: int = 5000,
     suppress_plot=False,
     plot_filename=None
 ) -> dict:
     """
-    OPTIMIZED VERSION - Faster normalization and sparse matrix writing.
+    Compares the Depth-Adjusted M3Drop model vs a Basic M3Drop model.
     """
     pipeline_start_time = time.time()
     print(f"FUNCTION: NBumiCompareModels() | Comparing models for {cleaned_filename}")
+
+    # --- HANDSHAKE ---
+    # Multiplier 2.5: Normalization loop (Read, Divide, Write). Sparse I/O bound.
+    chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=2.5, is_dense=False)
 
     # --- Phase 1: OPTIMIZED Normalization ---
     print("Phase [1/4]: Creating temporary 'basic' normalized data file...")
@@ -353,20 +328,21 @@ def NBumiCompareModelsGPU(
 
     print(f"Phase [1/4]: COMPLETE{' '*50}")
 
+    # Note: These calls no longer take 'chunk_size'. Handshake runs inside them.
     print("Phase [2/4]: Fitting Basic Model on normalized data...")
-    stats_basic = hidden_calc_valsGPU(basic_norm_filename, chunk_size=chunk_size)
-    fit_basic = NBumiFitBasicModelGPU(basic_norm_filename, stats_basic, chunk_size=chunk_size)
+    stats_basic = hidden_calc_valsGPU(basic_norm_filename)
+    fit_basic = NBumiFitBasicModelGPU(basic_norm_filename, stats_basic)
     print("Phase [2/4]: COMPLETE")
     
     print("Phase [3/4]: Evaluating fits of both models on ORIGINAL data...")
-    check_adjust = NBumiCheckFitFSGPU(cleaned_filename, fit_adjust, suppress_plot=True, chunk_size=chunk_size)
+    check_adjust = NBumiCheckFitFSGPU(cleaned_filename, fit_adjust, suppress_plot=True)
     
     fit_basic_for_eval = {
         'sizes': fit_basic['sizes'],
         'vals': stats,
         'var_obs': fit_basic['var_obs']
     }
-    check_basic = NBumiCheckFitFSGPU(cleaned_filename, fit_basic_for_eval, suppress_plot=True, chunk_size=chunk_size)
+    check_basic = NBumiCheckFitFSGPU(cleaned_filename, fit_basic_for_eval, suppress_plot=True)
     print("Phase [3/4]: COMPLETE")
 
     print("Phase [4/4]: Generating final comparison...")
@@ -416,7 +392,6 @@ def NBumiCompareModelsGPU(
 
     pipeline_end_time = time.time()
     
-    # --- ADD THIS LINE TO FIX THE ERROR ---
     adata_meta.file.close() # Explicitly close the file handle
     
     os.remove(basic_norm_filename)
@@ -435,11 +410,6 @@ def NBumiPlotDispVsMeanGPU(
 ):
     """
     Generates a diagnostic plot of the dispersion vs. mean expression.
-
-    Args:
-        fit (dict): The 'fit' object from NBumiFitModelGPU.
-        suppress_plot (bool): If True, the plot will not be displayed on screen.
-        plot_filename (str, optional): Path to save the plot. If None, not saved.
     """
     print("FUNCTION: NBumiPlotDispVsMean()")
 
@@ -481,4 +451,3 @@ def NBumiPlotDispVsMeanGPU(
 
     plt.close()
     print("FUNCTION: NBumiPlotDispVsMean() COMPLETE\n")
-
