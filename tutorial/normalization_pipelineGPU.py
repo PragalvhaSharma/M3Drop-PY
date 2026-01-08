@@ -6,7 +6,6 @@ import time
 # --- 1. DEFINE FILE PATHS AND PARAMETERS ---
 # !! CHANGE THIS LINE TO SWITCH DATASETS !!
 DATASET_BASENAME = "Human_Heart"
-CHUNK_SIZE = 5000
 
 
 # --- Input Files ---
@@ -27,23 +26,21 @@ if __name__ == "__main__":
     pipeline_start_time = time.time()
     print(f"--- Initializing Full Normalization Pipeline for {RAW_DATA_FILE} ---\n")
 
-    # STAGE 1: Data Cleaning (from core.py)
+    # STAGE 1: Data Cleaning
     print("--- PIPELINE STAGE 1: DATA CLEANING ---")
     if not os.path.exists(CLEANED_DATA_FILE):
         M3Drop.ConvertDataSparseGPU(
             input_filename=RAW_DATA_FILE,
-            output_filename=CLEANED_DATA_FILE,
-            row_chunk_size=CHUNK_SIZE
+            output_filename=CLEANED_DATA_FILE
         )
     else:
         print(f"STATUS: Found existing file '{CLEANED_DATA_FILE}'. Skipping.\n")
 
-    # STAGE 2: Statistics Calculation (from core.py)
+    # STAGE 2: Statistics Calculation
     print("--- PIPELINE STAGE 2: STATISTICS CALCULATION ---")
     if not os.path.exists(STATS_OUTPUT_FILE):
         stats = M3Drop.hidden_calc_valsGPU(
-            filename=CLEANED_DATA_FILE,
-            chunk_size=CHUNK_SIZE
+            filename=CLEANED_DATA_FILE
         )
         print(f"STATUS: Saving statistics to '{STATS_OUTPUT_FILE}'...")
         with open(STATS_OUTPUT_FILE, 'wb') as f:
@@ -52,10 +49,10 @@ if __name__ == "__main__":
     else:
         print(f"STATUS: Found existing statistics file '{STATS_OUTPUT_FILE}'. Skipping calculation.\n")
 
-    # STAGE 3: Model Fitting (from core.py)
+    # STAGE 3: Model Fitting
     print("--- PIPELINE STAGE 3: MODEL FITTING ---")
     if not os.path.exists(FIT_OUTPUT_FILE):
-        # Load stats object, as it's needed for this step
+        # Load stats object
         print(f"STATUS: Loading statistics from '{STATS_OUTPUT_FILE}'...")
         with open(STATS_OUTPUT_FILE, 'rb') as f:
             stats = pickle.load(f)
@@ -63,8 +60,7 @@ if __name__ == "__main__":
         
         fit_results = M3Drop.NBumiFitModelGPU(
             cleaned_filename=CLEANED_DATA_FILE,
-            stats=stats,
-            chunk_size=CHUNK_SIZE
+            stats=stats
         )
         print(f"STATUS: Saving fit results to '{FIT_OUTPUT_FILE}'...")
         with open(FIT_OUTPUT_FILE, 'wb') as f:
@@ -82,8 +78,7 @@ if __name__ == "__main__":
         M3Drop.NBumiPearsonResidualsGPU(
             cleaned_filename=CLEANED_DATA_FILE,
             fit_filename=FIT_OUTPUT_FILE,
-            output_filename=PEARSON_FULL_OUTPUT_FILE,
-            chunk_size=CHUNK_SIZE
+            output_filename=PEARSON_FULL_OUTPUT_FILE
         )
     else:
         print(f"STATUS: Found existing file '{PEARSON_FULL_OUTPUT_FILE}'. Skipping.\n")
@@ -94,8 +89,7 @@ if __name__ == "__main__":
         M3Drop.NBumiPearsonResidualsApproxGPU(
             cleaned_filename=CLEANED_DATA_FILE,
             stats_filename=STATS_OUTPUT_FILE,
-            output_filename=PEARSON_APPROX_OUTPUT_FILE,
-            chunk_size=CHUNK_SIZE
+            output_filename=PEARSON_APPROX_OUTPUT_FILE
         )
     else:
         print(f"STATUS: Found existing file '{PEARSON_APPROX_OUTPUT_FILE}'. Skipping.\n")
