@@ -11,6 +11,7 @@
 
 2.  **Installation and Your Project File Location:**
     * Install the package with 'pip install M3Drop' on your command prompt.
+    * pip install cupy
     * Create a new folder that contains your dataset, `Human Heart.h5ad`, and `tutorial_core_pipeline.py`.
 
 3.  **Script Check:**
