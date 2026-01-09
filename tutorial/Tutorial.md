@@ -20,7 +20,6 @@
 
     ```python
     DATASET_BASENAME = "Human_Heart"
-    ROW_CHUNK = 5000
     ```
 
 ### 2. Execution
