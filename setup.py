@@ -28,7 +28,7 @@ setuptools.setup(
         "matplotlib>=3.5.0",
         "matplotlib-venn>=0.11",
         "memory_profiler>=0.60.0",
-        "numpy>=1.21.0,<1.24",      # STRICT CAP
+        "numpy>=1.21.0",      # STRICT CAP
         "pandas>=1.5.0,<2.0",       # STRICT CAP
         "scanpy>=1.9.0",
         "scikit-learn>=1.0.0,<1.4", # STRICT CAP
