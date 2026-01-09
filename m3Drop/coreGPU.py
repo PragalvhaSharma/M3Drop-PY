@@ -148,22 +148,22 @@ def ConvertDataSparseGPU(
 ):
     """
     GPU-ACCELERATED CLEANING.
+    Now properly shifts gears between Phase 1 (Fast Read) and Phase 2 (Slow Write).
     """
     start_time = time.perf_counter()
     print(f"FUNCTION: ConvertDataSparseGPU() | FILE: {input_filename}")
-
-    # GEAR 1: FORKLIFT MODE (Disk Bound)
-    # Cap at 5,000 to prevent Hard Drive choking and OS Buffer stalls.
-    row_chunk_size = get_optimal_chunk_size(input_filename, multiplier=2.5, is_dense=False, override_cap=5000)
 
     with h5py.File(input_filename, 'r') as f_in:
         x_group_in = f_in['X']
         n_cells, n_genes = x_group_in.attrs['shape']
 
-        # --- PASS 1: GPU-ACCELERATED GENE IDENTIFICATION ---
-        print("Phase [1/2]: Identifying genes with non-zero counts...")
+        # --- GEAR 2: FAST READ (Phase 1) ---
+        # We are only reading indices. No writing. Let it fly.
+        # Max cap 50k to saturate PCIe bus without timeout.
+        read_chunk_size = get_optimal_chunk_size(input_filename, multiplier=2.5, is_dense=False, override_cap=50000)
         
-        # Use GPU memory for the mask if available
+        print(f"Phase [1/2]: Identifying genes with non-zero counts... (Chunk: {read_chunk_size})")
+        
         if HAS_GPU:
             genes_to_keep_mask = cupy.zeros(n_genes, dtype=bool)
         else:
@@ -172,32 +172,26 @@ def ConvertDataSparseGPU(
         h5_indptr = x_group_in['indptr']
         h5_indices = x_group_in['indices']
 
-        for i in range(0, n_cells, row_chunk_size):
-            end_row = min(i + row_chunk_size, n_cells)
+        for i in range(0, n_cells, read_chunk_size):
+            end_row = min(i + read_chunk_size, n_cells)
             print(f"Phase [1/2]: Processing: {end_row} of {n_cells} cells.", end='\r')
 
             start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
             if start_idx == end_idx:
                 continue
 
-            # Load indices to CPU
             indices_cpu = h5_indices[start_idx:end_idx]
 
             if HAS_GPU:
-                # --- GPU SORTING (The Speed Fix) ---
                 indices_gpu = cupy.asarray(indices_cpu)
                 unique_gpu = cupy.unique(indices_gpu)
                 genes_to_keep_mask[unique_gpu] = True
-                
-                # Free VRAM
                 del indices_gpu, unique_gpu
                 cupy.get_default_memory_pool().free_all_blocks()
             else:
-                # Fallback for laptop
                 unique_cpu = np.unique(indices_cpu)
                 genes_to_keep_mask[unique_cpu] = True
 
-        # Bring mask back to CPU for Phase 2
         if HAS_GPU:
             genes_to_keep_mask_cpu = cupy.asnumpy(genes_to_keep_mask)
         else:
@@ -206,8 +200,11 @@ def ConvertDataSparseGPU(
         n_genes_to_keep = np.sum(genes_to_keep_mask_cpu)
         print(f"\nPhase [1/2]: COMPLETE | Result: {n_genes_to_keep} / {n_genes} genes retained.")
 
-        # --- PASS 2: WRITE CLEANED DATA (CPU/DISK BOUND) ---
-        print("Phase [2/2]: Rounding up decimals and saving filtered output to disk...")
+        # --- GEAR 1: FORKLIFT WRITE (Phase 2) ---
+        # We are writing to disk. We MUST slow down to 5,000 to save the hard drive.
+        write_chunk_size = get_optimal_chunk_size(input_filename, multiplier=2.5, is_dense=False, override_cap=5000)
+        
+        print(f"Phase [2/2]: Rounding up decimals and saving filtered output to disk... (Chunk: {write_chunk_size})")
         adata_meta = anndata.read_h5ad(input_filename, backed='r')
         filtered_var_df = adata_meta.var[genes_to_keep_mask_cpu]
         
@@ -226,8 +223,8 @@ def ConvertDataSparseGPU(
 
             h5_data = x_group_in['data']
 
-            for i in range(0, n_cells, row_chunk_size):
-                end_row = min(i + row_chunk_size, n_cells)
+            for i in range(0, n_cells, write_chunk_size):
+                end_row = min(i + write_chunk_size, n_cells)
                 print(f"Phase [2/2]: Processing: {end_row} of {n_cells} cells.", end='\r')
 
                 start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
@@ -585,5 +582,6 @@ def NBumiCombinedDropVolcanoGPU(results_df, qval_thresh=0.05, effect_size_thresh
     end_time = time.perf_counter()
     print(f"Total time: {end_time - start_time:.2f} seconds.\n")
     return ax
+
 
 
