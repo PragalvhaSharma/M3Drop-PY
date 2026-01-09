@@ -24,93 +24,119 @@ except ImportError:
     HAS_GPU = False
     print(" [WARNING] CuPy not found. GPU acceleration disabled.")
 
-# --- HANDSHAKE PROTOCOL (INTENT-BASED) ---
+# --- THE KOMMANDOGERÄT (PING & GOVERNOR PROTOCOL) ---
 def get_optimal_chunk_size(filename: str, multiplier: float, is_dense: bool = False) -> int:
     """
-    HANDSHAKE PROTOCOL:
-    Interrogates Hardware. If H100 is found, overrides safety limits for performance.
+    AUTO-TUNER ENGINE (PING & GOVERNOR).
+    
+    Sensors:
+    1. Data Weight (Exact bytes per row)
+    2. RAM Pressure (psutil)
+    3. VRAM Pressure (cupy)
+    4. Context (SLURM Check)
+    
+    Governor:
+    - Cluster: Maximize Throughput (Min 5k rows, Ignore CPU Cache)
+    - Local:   Maximize Responsiveness (Target 10MB Chunk, Protect CPU Cache)
     """
     
-    # --- 1. HARDWARE OVERRIDE (The Speed Switch) ---
-    if HAS_GPU:
-        try:
-            gpu_name = cupy.cuda.Device(0).name.decode('utf-8')
-            # If on Supercomputer (H100/A100), FORCE AGGRESSIVE MODE
-            if "H100" in gpu_name or "A100" in gpu_name:
-                print(f" [HARDWARE] Detected {gpu_name}. Forcing High-Performance Mode (20,000).")
-                return 20000
-        except:
-            pass
-
-    # --- 2. STANDARD SAFETY LOGIC (For Laptops/Small GPUs) ---
-    # 1. HARDWARE INTERROGATION (VRAM)
-    if HAS_GPU:
-        mempool = cupy.get_default_memory_pool()
-        mempool.free_all_blocks() 
-        mem_info = cupy.cuda.Device(0).mem_info
-        free_vram = mem_info[0]
-    else:
-        free_vram = 0
-    
-    # Constraint 1: VRAM (The Bucket) - 80% Limit
-    vram_target = free_vram * 0.80
-    
-    # 2. HARDWARE INTERROGATION (RAM)
-    sys_mem = psutil.virtual_memory()
-    avail_ram = sys_mem.available
-    
-    # Constraint 2: RAM (The Hallway) - 30% Limit
-    ram_target = avail_ram * 0.30
-
-    # 3. TELEMETRY (DATA DENSITY)
+    # --- SENSOR A: DATA WEIGHT ---
     with h5py.File(filename, 'r') as f:
-        if 'X' not in f or 'indptr' not in f['X']:
-             print(" [ERROR] Invalid file structure. Aborting handshake.")
-             raise ValueError(f"File {filename} is not in expected sparse .h5ad format.")
-
         x_group = f['X']
         shape = x_group.attrs['shape']
         n_cells, n_genes = shape[0], shape[1]
         
-        # Get Global Density
-        nnz = x_group['indptr'][-1]
+        # Detect exact byte size (4 for float32, 8 for float64)
+        if 'data' in x_group:
+            dtype_size = x_group['data'].dtype.itemsize
+        else:
+            dtype_size = 4 # Default safety
+            
+        # Calculate Load
+        if is_dense:
+            # Dense: Width * Bytes * Overhead
+            bytes_per_row = n_genes * dtype_size * multiplier
+        else:
+            # Sparse: (Val + Col + Ptr) * Density
+            if 'indptr' in x_group:
+                nnz = x_group['indptr'][-1]
+                density = nnz / (n_cells * n_genes)
+            else:
+                density = 0.1 # Safety default
+            
+            # Sparse Row = (Bytes_Data + 4_Index) * density * n_genes
+            bytes_per_row = (n_genes * density * (dtype_size + 4)) * multiplier
     
-    bytes_per_float = 8 
-    bytes_per_int = 4
-    
-    if is_dense:
-        row_cost = n_genes * bytes_per_float * multiplier
-        avg_nnz_row = n_genes 
-        density_str = "N/A (Ignored)"
-    else:
-        avg_nnz_row = nnz / n_cells
-        row_cost = avg_nnz_row * (bytes_per_float + bytes_per_int) * multiplier
-        if row_cost == 0: row_cost = 1 
-        density_str = f"{nnz / (n_cells * n_genes):.5%}"
+    if bytes_per_row < 1: bytes_per_row = 1
 
-    # --- THE CALCULATIONS ---
-    limit_vram = int(vram_target / row_cost) if row_cost > 0 else 1000
-    limit_ram = int(ram_target / row_cost) if row_cost > 0 else 1000
-    
-    # Limit C: CPU Element Cap
-    target_element_cap = 5_000_000 # Conservative 5M for laptops
-    limit_cpu = int(target_element_cap / avg_nnz_row)
+    # --- SENSOR B: RAM CAPACITY ---
+    avail_ram = psutil.virtual_memory().available
+    limit_ram = int((avail_ram * 0.30) / bytes_per_row) # Cap at 30% RAM
 
-    optimal_chunk = min(limit_vram, limit_ram, limit_cpu)
+    # --- SENSOR C: VRAM CAPACITY ---
+    limit_vram = float('inf')
+    if HAS_GPU:
+        try:
+            mempool = cupy.get_default_memory_pool()
+            mempool.free_all_blocks()
+            free_vram = cupy.cuda.Device(0).mem_info[0]
+            limit_vram = int((free_vram * 0.60) / bytes_per_row) # Cap at 60% VRAM
+        except:
+            pass
+
+    # --- SENSOR D: CONTEXT CHECK (SLURM) ---
+    # This is the Ticket Stub check.
+    is_cluster = "SLURM_JOB_ID" in os.environ
+
+    # --- THE GOVERNOR ---
     
-    if optimal_chunk > n_cells: optimal_chunk = n_cells
-    if optimal_chunk > 1000: optimal_chunk = (optimal_chunk // 1000) * 1000
+    if is_cluster and HAS_GPU:
+        # SCENARIO 1: CLUSTER (Beast Mode)
+        # Goal: Throughput. Ignore CPU Cache.
+        optimal = min(limit_ram, limit_vram)
         
+        # ANTI-STALL FLOOR: Force 5,000 rows minimum to overcome latency
+        if optimal < 5000: optimal = 5000
+        
+        mode_msg = "CLUSTER (SLURM Detected)"
+        
+    else:
+        # SCENARIO 2: LOCAL (Safe Harbor)
+        # Goal: Responsiveness. Protect L3 Cache.
+        
+        # Sensor 4: CPU Cache Target (10MB)
+        # 10MB fits in almost all L3 caches (preventing thrashing)
+        target_10mb_rows = int(10_000_000 / bytes_per_row)
+        
+        optimal = min(limit_ram, limit_vram, target_10mb_rows)
+        
+        # ANTI-FREEZE FLOOR: Force 500 rows minimum
+        if optimal < 500: optimal = 500
+        
+        mode_msg = "LOCAL (Safe Harbor)"
+
+    # GLOBAL CAP (Transport Safety)
+    if optimal > 50000: optimal = 50000
+    
+    # Cap at total file size
+    if optimal > n_cells: optimal = n_cells
+
+    # --- TELEMETRY OUTPUT ---
     print(f"\n------------------------------------------------------------")
-    print(f" CHUNK SIZE OPTIMIZATION ENGINE           [{time.strftime('%H:%M:%S')}]")
+    print(f" CHUNK SIZE OPTIMIZER (PING & GOVERNOR)            [{time.strftime('%H:%M:%S')}]")
     print(f"------------------------------------------------------------")
-    print(f" FILE         : {os.path.basename(filename)}")
-    print(f" HARDWARE     : Local/Small GPU")
+    print(f" CONTEXT      : {mode_msg}")
+    print(f" DATA LOAD    : {int(bytes_per_row):,} bytes/row (dtype={dtype_size})")
+    print(f" RAM LIMIT    : {limit_ram:,} rows")
+    if HAS_GPU:
+        print(f" VRAM LIMIT   : {limit_vram if limit_vram != float('inf') else 'N/A':,} rows")
+    else:
+        print(f" VRAM LIMIT   : N/A (No GPU)")
     print(f"------------------------------------------------------------")
-    print(f" >> SELECTED   : {optimal_chunk:,} rows")
+    print(f" >> Optimal Chunk Size  : {int(optimal):,} rows")
     print(f"------------------------------------------------------------\n")
     
-    return max(500, int(optimal_chunk))
+    return int(optimal)
 
 
 def ConvertDataSparseGPU(
@@ -118,7 +144,7 @@ def ConvertDataSparseGPU(
     output_filename: str
 ):
     """
-    TRUE GPU ACCELERATED CLEANING.
+    GPU-ACCELERATED CLEANING.
     Uses CuPy to calculate unique genes 50x faster than CPU.
     """
     start_time = time.perf_counter()
@@ -132,7 +158,7 @@ def ConvertDataSparseGPU(
         n_cells, n_genes = x_group_in.attrs['shape']
 
         # --- PASS 1: GPU-ACCELERATED GENE IDENTIFICATION ---
-        print("Phase [1/2]: Identifying genes with non-zero counts (GPU Optimized)...")
+        print("Phase [1/2]: Identifying genes with non-zero counts...")
         
         # Use GPU memory for the mask if available
         if HAS_GPU:
@@ -155,7 +181,7 @@ def ConvertDataSparseGPU(
             indices_cpu = h5_indices[start_idx:end_idx]
 
             if HAS_GPU:
-                # --- THE FIX: MOVE TO GPU ---
+                # --- GPU SORTING (The Speed Fix) ---
                 indices_gpu = cupy.asarray(indices_cpu)
                 unique_gpu = cupy.unique(indices_gpu)
                 genes_to_keep_mask[unique_gpu] = True
