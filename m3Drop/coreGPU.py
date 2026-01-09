@@ -474,9 +474,12 @@ def NBumiFeatureSelectionCombinedDropGPU(fit: dict, cleaned_filename: str, metho
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiFeatureSelectionCombinedDrop() | FILE: {cleaned_filename}")
 
-    # GEAR 3: CRUISER MODE (Transport Bound)
-    # Calculating dropout probs. Can be fairly large chunk.
-    chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=3.0, is_dense=True, override_cap=50000)
+    # GEAR 4: DENSE MATH MODE (Memory Critical)
+    # Multiplier 20.0x: 
+    # 1. We assume data promotes to float64 (double memory).
+    # 2. We broadcast dense matrices (ng * chunk).
+    # 3. We hold ~5 copies (mu, exp_size, p_is, p_var, temp).
+    chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=20.0, is_dense=True, override_cap=20000)
 
     print("Phase [1/3]: Initializing arrays...")
     vals = fit['vals']
@@ -503,13 +506,19 @@ def NBumiFeatureSelectionCombinedDropGPU(fit: dict, cleaned_filename: str, metho
         print(f"Phase [2/3]: Processing: {end_col} of {nc} cells.", end='\r')
 
         tis_chunk_gpu = tis_gpu[i:end_col]
+        # Memory Intense: Creates dense (chunk x genes) float64 matrices
         mu_chunk_gpu = tjs_gpu[:, cupy.newaxis] * tis_chunk_gpu[cupy.newaxis, :] / total
+        
+        # Calculate p_is and p_var in steps to allow memory recycling if possible
         p_is_chunk_gpu = cupy.power(1 + mu_chunk_gpu / exp_size_gpu[:, cupy.newaxis], -exp_size_gpu[:, cupy.newaxis])
-        p_var_is_chunk_gpu = p_is_chunk_gpu * (1 - p_is_chunk_gpu)
         
         p_sum_gpu += p_is_chunk_gpu.sum(axis=1)
+        
+        # Calculate Variance
+        p_var_is_chunk_gpu = p_is_chunk_gpu * (1 - p_is_chunk_gpu)
         p_var_sum_gpu += p_var_is_chunk_gpu.sum(axis=1)
         
+        # Aggressive cleanup
         del mu_chunk_gpu, p_is_chunk_gpu, p_var_is_chunk_gpu, tis_chunk_gpu
         cupy.get_default_memory_pool().free_all_blocks()
     
@@ -576,4 +585,5 @@ def NBumiCombinedDropVolcanoGPU(results_df, qval_thresh=0.05, effect_size_thresh
     end_time = time.perf_counter()
     print(f"Total time: {end_time - start_time:.2f} seconds.\n")
     return ax
+
 
