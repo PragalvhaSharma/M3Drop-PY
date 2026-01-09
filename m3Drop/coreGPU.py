@@ -25,7 +25,7 @@ except ImportError:
     print(" [WARNING] CuPy not found. GPU acceleration disabled.")
 
 # --- THE KOMMANDOGERÄT (PING & GOVERNOR PROTOCOL) ---
-def get_optimal_chunk_size(filename: str, multiplier: float, is_dense: bool = False) -> int:
+def get_optimal_chunk_size(filename: str, multiplier: float, is_dense: bool = False, override_cap: int = 50000) -> int:
     """
     AUTO-TUNER ENGINE (PING & GOVERNOR).
     
@@ -96,7 +96,8 @@ def get_optimal_chunk_size(filename: str, multiplier: float, is_dense: bool = Fa
         optimal = min(limit_ram, limit_vram)
         
         # ANTI-STALL FLOOR: Force 5,000 rows minimum to overcome latency
-        if optimal < 5000: optimal = 5000
+        # (Unless the calculated limit is dangerously low, then respect safety)
+        if optimal < 5000 and optimal > 100: optimal = 5000
         
         mode_msg = "CLUSTER (SLURM Detected)"
         
@@ -115,8 +116,8 @@ def get_optimal_chunk_size(filename: str, multiplier: float, is_dense: bool = Fa
         
         mode_msg = "LOCAL (Safe Harbor)"
 
-    # GLOBAL CAP (Transport Safety)
-    if optimal > 50000: optimal = 50000
+    # GLOBAL CAP (Transport Safety & Function Specific Override)
+    if optimal > override_cap: optimal = override_cap
     
     # Cap at total file size
     if optimal > n_cells: optimal = n_cells
@@ -127,13 +128,15 @@ def get_optimal_chunk_size(filename: str, multiplier: float, is_dense: bool = Fa
     print(f"------------------------------------------------------------")
     print(f" CONTEXT      : {mode_msg}")
     print(f" DATA LOAD    : {int(bytes_per_row):,} bytes/row (dtype={dtype_size})")
+    print(f" MULTIPLIER   : {multiplier}x")
+    print(f" OVERRIDE CAP : {override_cap:,} rows")
     print(f" RAM LIMIT    : {limit_ram:,} rows")
     if HAS_GPU:
         print(f" VRAM LIMIT   : {limit_vram if limit_vram != float('inf') else 'N/A':,} rows")
     else:
         print(f" VRAM LIMIT   : N/A (No GPU)")
     print(f"------------------------------------------------------------")
-    print(f" >> Optimal Chunk Size  : {int(optimal):,} rows")
+    print(f" >> ACTUATOR  : {int(optimal):,} rows")
     print(f"------------------------------------------------------------\n")
     
     return int(optimal)
@@ -145,13 +148,13 @@ def ConvertDataSparseGPU(
 ):
     """
     GPU-ACCELERATED CLEANING.
-    Uses CuPy to calculate unique genes 50x faster than CPU.
     """
     start_time = time.perf_counter()
     print(f"FUNCTION: ConvertDataSparseGPU() | FILE: {input_filename}")
 
-    # Multiplier 2.5: Input CSR + Output CSR + 0.5 overhead
-    row_chunk_size = get_optimal_chunk_size(input_filename, multiplier=2.5, is_dense=False)
+    # GEAR 1: FORKLIFT MODE (Disk Bound)
+    # Cap at 5,000 to prevent Hard Drive choking and OS Buffer stalls.
+    row_chunk_size = get_optimal_chunk_size(input_filename, multiplier=2.5, is_dense=False, override_cap=5000)
 
     with h5py.File(input_filename, 'r') as f_in:
         x_group_in = f_in['X']
@@ -261,7 +264,9 @@ def hidden_calc_valsGPU(filename: str) -> dict:
     start_time = time.perf_counter()
     print(f"FUNCTION: hidden_calc_vals() | FILE: {filename}")
 
-    chunk_size = get_optimal_chunk_size(filename, multiplier=3.0, is_dense=False)
+    # GEAR 3: CRUISER MODE (Transport Bound)
+    # Simple math. Maximize throughput with 50k cap.
+    chunk_size = get_optimal_chunk_size(filename, multiplier=3.0, is_dense=False, override_cap=50000)
 
     adata_meta = anndata.read_h5ad(filename, backed='r')
     print("Phase [1/3]: Finding nc and ng...")
@@ -333,7 +338,11 @@ def NBumiFitModelGPU(cleaned_filename: str, stats: dict) -> dict:
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiFitModel() | FILE: {cleaned_filename}")
     
-    chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=4.0, is_dense=False)
+    # GEAR 2: HEAVY LIFT MODE (Memory Bound)
+    # High Multiplier (12.0) to account for heavy intermediate matrices (x, x^2, mean).
+    # No artificial cap (50k) - Let it scale with VRAM.
+    # If 12GB VRAM -> ~8k rows. If 80GB VRAM -> ~50k rows.
+    chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=12.0, is_dense=False, override_cap=50000)
     
     tjs = stats['tjs'].values
     tis = stats['tis'].values
@@ -465,7 +474,9 @@ def NBumiFeatureSelectionCombinedDropGPU(fit: dict, cleaned_filename: str, metho
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiFeatureSelectionCombinedDrop() | FILE: {cleaned_filename}")
 
-    chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=3.0, is_dense=True)
+    # GEAR 3: CRUISER MODE (Transport Bound)
+    # Calculating dropout probs. Can be fairly large chunk.
+    chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=3.0, is_dense=True, override_cap=50000)
 
     print("Phase [1/3]: Initializing arrays...")
     vals = fit['vals']
