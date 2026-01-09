@@ -5,6 +5,7 @@ import h5py
 import pandas as pd
 import time
 import os
+import psutil  # Added for RAM Handshake
 
 from cupy.sparse import csr_matrix as cp_csr_matrix
 from scipy.sparse import csr_matrix as sp_csr_matrix
@@ -16,25 +17,36 @@ from statsmodels.stats.multitest import multipletests
 
 import pickle
 
-# --- HANDSHAKE PROTOCOL ---
-def get_optimal_chunk_size(filename: str, multiplier: float, is_dense: bool = False, reserve_ratio: float = 0.20) -> int:
+# --- HANDSHAKE PROTOCOL (INTENT-BASED) ---
+def get_optimal_chunk_size(filename: str, multiplier: float, is_dense: bool = False) -> int:
     """
     HANDSHAKE PROTOCOL:
-    Queries GPU VRAM, checks file density, and calculates the maximum safe chunk size.
+    Interrogates VRAM, System RAM, and Data Density to find the safest, fastest chunk size.
+    Constraints:
+    1. VRAM: Use max 80% of GPU memory.
+    2. RAM: Use max 30% of System RAM (accounts for 3x Python overhead).
+    3. CPU: Cap at 20 Million non-zero elements (avoids GC freeze / Cache thrashing).
     """
-    # 1. Hardware Interrogation
+    
+    # 1. HARDWARE INTERROGATION (VRAM)
     mempool = cupy.get_default_memory_pool()
-    mempool.free_all_blocks() # Flush fragmentation before check
+    mempool.free_all_blocks() 
     mem_info = cupy.cuda.Device(0).mem_info
     free_vram = mem_info[0]
     total_vram = mem_info[1]
     
-    # Safety Reserve (Hardware Overhead + Fragmentation Buffer)
-    safe_vram = free_vram * (1.0 - reserve_ratio)
+    # Constraint 1: VRAM (The Bucket) - 80% Limit
+    vram_target = free_vram * 0.80
     
-    # 2. Telemetry (File Stats)
+    # 2. HARDWARE INTERROGATION (RAM)
+    sys_mem = psutil.virtual_memory()
+    avail_ram = sys_mem.available
+    
+    # Constraint 2: RAM (The Hallway) - 30% Limit (Buffer for Python Overhead)
+    ram_target = avail_ram * 0.30
+
+    # 3. TELEMETRY (DATA DENSITY)
     with h5py.File(filename, 'r') as f:
-        # Check for sparse structure
         if 'X' not in f or 'indptr' not in f['X']:
              print(" [ERROR] Invalid file structure. Aborting handshake.")
              raise ValueError(f"File {filename} is not in expected sparse .h5ad format.")
@@ -46,48 +58,66 @@ def get_optimal_chunk_size(filename: str, multiplier: float, is_dense: bool = Fa
         # Get Global Density (Total Non-Zeros)
         nnz = x_group['indptr'][-1]
     
-    # 3. Calculation
+    # Calculate bytes per row based on density
     bytes_per_float = 8 
     bytes_per_int = 4
     
     if is_dense:
-        # DENSE MODE: Logic is strictly based on full matrix expansion (Broadcast)
+        # DENSE MODE: Logic is based on full matrix expansion (Broadcast)
+        # Cost = Width * 8 bytes * Multiplier
         row_cost = n_genes * bytes_per_float * multiplier
-        chunk_size = int(safe_vram / row_cost)
+        avg_nnz_row = n_genes # Treat as full for CPU cap
         mode_str = "DENSE (BROADCAST)"
         density_str = "N/A (Ignored)"
-        
     else:
         # SPARSE MODE: Logic is based on Non-Zero elements (Compressed)
         avg_nnz_row = nnz / n_cells
         row_cost = avg_nnz_row * (bytes_per_float + bytes_per_int) * multiplier
-        
         if row_cost == 0: row_cost = 1 
         
-        chunk_size = int(safe_vram / row_cost)
         mode_str = "SPARSE (COMPRESSED)"
         density_str = f"{nnz / (n_cells * n_genes):.5%}"
 
+    # --- THE CALCULATIONS ---
+    
+    # Limit A: VRAM
+    limit_vram = int(vram_target / row_cost)
+    
+    # Limit B: RAM
+    limit_ram = int(ram_target / row_cost)
+    
+    # Limit C: CPU Element Cap (The Speed Limit)
+    # Cap batch at ~20 Million non-zeros to keep Python GC fast
+    target_element_cap = 20_000_000
+    limit_cpu = int(target_element_cap / avg_nnz_row)
+
+    # --- THE DECISION ---
+    optimal_chunk = min(limit_vram, limit_ram, limit_cpu)
+    
     # Cap chunk size to total cells
-    if chunk_size > n_cells:
-        chunk_size = n_cells
+    if optimal_chunk > n_cells:
+        optimal_chunk = n_cells
         
-    # 4. System Log Output
+    # Round down to nearest 1000 for neatness
+    if optimal_chunk > 1000:
+        optimal_chunk = (optimal_chunk // 1000) * 1000
+        
+    # 4. SYSTEM LOG OUTPUT
     print(f"\n------------------------------------------------------------")
-    print(f" GPU MEMORY ALLOCATION LOG                  [{time.strftime('%H:%M:%S')}]")
+    print(f" INTENT-BASED OPTIMIZATION ENGINE           [{time.strftime('%H:%M:%S')}]")
     print(f"------------------------------------------------------------")
     print(f" FILE         : {os.path.basename(filename)}")
-    print(f" VRAM (TOTAL) : {total_vram / 1e9:.2f} GB")
-    print(f" VRAM (AVAIL) : {free_vram / 1e9:.2f} GB  (Target: {safe_vram / 1e9:.2f} GB)")
+    print(f" DENSITY      : {density_str} ({int(avg_nnz_row)} nz/row)")
     print(f"------------------------------------------------------------")
-    print(f" MODE         : {mode_str}")
-    print(f" MULTIPLIER   : {multiplier:.1f}x")
-    print(f" DENSITY      : {density_str}")
+    print(f" [LIMITS CALCULATION]")
+    print(f" 1. VRAM (80%) : {limit_vram:,} rows")
+    print(f" 2. RAM  (30%) : {limit_ram:,} rows")
+    print(f" 3. CPU  (Cap) : {limit_cpu:,} rows  (Based on 20M element cap)")
     print(f"------------------------------------------------------------")
-    print(f" CHUNK SIZE   : {chunk_size:,} rows")
+    print(f" >> SELECTED   : {optimal_chunk:,} rows")
     print(f"------------------------------------------------------------\n")
     
-    return int(chunk_size)
+    return int(optimal_chunk)
 
 
 def ConvertDataSparseGPU(
