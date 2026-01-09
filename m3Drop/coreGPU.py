@@ -24,7 +24,7 @@ except ImportError:
     HAS_GPU = False
     print(" [WARNING] CuPy not found. GPU acceleration disabled.")
 
-# --- THE KOMMANDOGERÄT (PING & GOVERNOR PROTOCOL) ---
+# --- (PING & GOVERNOR PROTOCOL) ---
 def get_optimal_chunk_size(filename: str, multiplier: float, is_dense: bool = False, override_cap: int = 50000) -> int:
     """
     AUTO-TUNER ENGINE (PING & GOVERNOR).
@@ -136,7 +136,7 @@ def get_optimal_chunk_size(filename: str, multiplier: float, is_dense: bool = Fa
     else:
         print(f" VRAM LIMIT   : N/A (No GPU)")
     print(f"------------------------------------------------------------")
-    print(f" >> ACTUATOR  : {int(optimal):,} rows")
+    print(f" >> CHUNK SIZE  : {int(optimal):,} rows")
     print(f"------------------------------------------------------------\n")
     
     return int(optimal)
@@ -576,3 +576,4 @@ def NBumiCombinedDropVolcanoGPU(results_df, qval_thresh=0.05, effect_size_thresh
     end_time = time.perf_counter()
     print(f"Total time: {end_time - start_time:.2f} seconds.\n")
     return ax
+
