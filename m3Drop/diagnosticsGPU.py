@@ -8,7 +8,7 @@ import h5py
 import os
 import time
 import psutil
-from scipy.sparse import csr_matrix
+from scipy import sparse
 from scipy import stats
 
 # ==============================================================================
@@ -70,7 +70,6 @@ def NBumiFitDispVsMean_Internal(fit_data):
     mask = (means > 0) & (sizes > 0) & np.isfinite(sizes) & np.isfinite(means)
     
     if np.sum(mask) < 10:
-        # Fallback if too few points
         return 0.0, 0.0
 
     log_means = np.log(means[mask])
@@ -85,10 +84,9 @@ def get_basic_stats(adata_path, chunk_size=10000):
     nc, ng = adata.shape
     
     sum_x = cp.zeros(ng, dtype=cp.float64)
-    # sum_sq = cp.zeros(ng, dtype=cp.float64) # Not strictly needed for basic stats return, but good for fit
-    djs = cp.zeros(ng, dtype=cp.int64) # Dropout count per gene
-    dis = cp.zeros(nc, dtype=cp.int64) # Dropout count per cell
-    tis = cp.zeros(nc, dtype=cp.float64) # Total counts per cell
+    djs = cp.zeros(ng, dtype=cp.int64) 
+    dis = cp.zeros(nc, dtype=cp.int64) 
+    tis = cp.zeros(nc, dtype=cp.float64) 
     
     print(f"DEBUG: calculating stats for {adata_path}")
     
@@ -96,13 +94,17 @@ def get_basic_stats(adata_path, chunk_size=10000):
         end = min(i + chunk_size, nc)
         chunk = adata[i:end].X
         
-        # Load to GPU
-        chunk_gpu = cp.asarray(chunk if not isinstance(chunk, pd.DataFrame) else chunk.values, dtype=cp.float32)
-        if csp.issparse(chunk_gpu):
-            chunk_gpu = chunk_gpu.toarray()
+        # --- SAFE LOAD (SPARSE AWARE) ---
+        if isinstance(chunk, pd.DataFrame):
+            chunk = chunk.values
+
+        if sparse.issparse(chunk):
+            chunk_gpu = csp.csr_matrix(chunk, dtype=cp.float32)
+            chunk_gpu = chunk_gpu.toarray() # Convert to dense for reduction
+        else:
+            chunk_gpu = cp.asarray(chunk, dtype=cp.float32)
             
         sum_x += cp.sum(chunk_gpu, axis=0)
-        # sum_sq += cp.sum(chunk_gpu**2, axis=0)
         
         # Dropouts (zeros)
         is_zero = (chunk_gpu == 0)
@@ -112,7 +114,6 @@ def get_basic_stats(adata_path, chunk_size=10000):
         dis[i:end] = cp.sum(is_zero, axis=1)
         tis[i:end] = cp.sum(chunk_gpu, axis=1)
         
-        # Explicit free
         del chunk_gpu, is_zero
         cp.get_default_memory_pool().free_all_blocks()
 
@@ -137,7 +138,6 @@ def NBumiFitBasicModelGPU(
 ) -> dict:
     """
     Fits the basic NB model (Method of Moments) on GPU.
-    Reconstructs logic from NBumiFitBasicModelCPU.
     """
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiFitBasicModelGPU() | FILE: {cleaned_filename}")
@@ -145,7 +145,6 @@ def NBumiFitBasicModelGPU(
     nc, ng = stats['nc'], stats['ng']
     tjs = cp.asarray(stats['tjs'].values, dtype=cp.float64)
     
-    # If chunk_size not provided, calculate it
     if chunk_size is None:
         chunk_size = calculate_optimal_chunk_size(ng, dtype_size=4, memory_multiplier=3.0)
 
@@ -160,9 +159,16 @@ def NBumiFitBasicModelGPU(
         print(f"Phase [1/2]: Processing: {end} of {nc} cells.", end='\r')
         
         chunk = adata[i:end].X
-        chunk_gpu = cp.asarray(chunk if not isinstance(chunk, pd.DataFrame) else chunk.values, dtype=cp.float32)
-        if csp.issparse(chunk_gpu):
+        
+        # --- SAFE LOAD (SPARSE AWARE) ---
+        if isinstance(chunk, pd.DataFrame):
+            chunk = chunk.values
+
+        if sparse.issparse(chunk):
+            chunk_gpu = csp.csr_matrix(chunk, dtype=cp.float32)
             chunk_gpu = chunk_gpu.toarray()
+        else:
+            chunk_gpu = cp.asarray(chunk, dtype=cp.float32)
             
         sum_x_sq += cp.sum(chunk_gpu**2, axis=0)
         
@@ -171,8 +177,7 @@ def NBumiFitBasicModelGPU(
         
     print(f"\nPhase [1/2]: COMPLETE")
 
-    # 2. Method of Moments Logic (CPU side for scalar safety/handling)
-    # Move huge arrays to CPU now that reduction is done
+    # 2. Method of Moments Logic
     mean_x_sq = cp.asnumpy(sum_x_sq) / nc
     mean_mu = cp.asnumpy(tjs) / nc
     
@@ -186,7 +191,7 @@ def NBumiFitBasicModelGPU(
     valid_mask = denominator > 1e-12
     sizes[valid_mask] = numerator[valid_mask] / denominator[valid_mask]
     
-    # Sanitization (Masking Infs/NaNs)
+    # Sanitization
     finite_sizes = sizes[np.isfinite(sizes) & (sizes > 0)]
     max_size_val = np.max(finite_sizes) * 10 if finite_sizes.size else 1000
     sizes[~np.isfinite(sizes) | (sizes <= 0)] = max_size_val
@@ -211,7 +216,6 @@ def NBumiCheckFitFSGPU(
 ) -> dict:
     """
     GPU version of NBumiCheckFitFS. 
-    Calculates expected dropouts using smoothed parameters.
     """
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiCheckFitFSGPU() | FILE: {cleaned_filename}")
@@ -232,20 +236,15 @@ def NBumiCheckFitFSGPU(
     smoothed_size = np.exp(intercept + slope * log_mean_expression)
     smoothed_size = np.nan_to_num(smoothed_size, nan=1.0, posinf=1e6, neginf=1.0)
     
-    # Move constants to GPU
     tjs_gpu = cp.asarray(tjs, dtype=cp.float32)
-    # tis_gpu = cp.asarray(tis, dtype=cp.float32) # Loaded per chunk usually
     smoothed_size_gpu = cp.asarray(smoothed_size, dtype=cp.float32)
     total_gpu = float(total)
+    tis_gpu_full = cp.asarray(tis, dtype=cp.float32)
 
     row_ps = cp.zeros(ng, dtype=cp.float64)
     col_ps = cp.zeros(nc, dtype=cp.float64)
     
-    # Pre-load TIS to GPU for slicing
-    tis_gpu_full = cp.asarray(tis, dtype=cp.float32)
-
     if chunk_size is None:
-        # Use multiplier 5.0 because of the broadcasting overhead below
         chunk_size = calculate_optimal_chunk_size(ng, dtype_size=4, memory_multiplier=5.0)
 
     print("Phase [2/2]: Calculating expected dropouts (GPU)...")
@@ -253,24 +252,18 @@ def NBumiCheckFitFSGPU(
         end = min(i + chunk_size, nc)
         print(f"Phase [2/2]: Processing: {end} of {nc} cells.", end='\r')
         
-        # Load Chunk (Tis for this chunk)
         tis_chunk = tis_gpu_full[i:end]
         
         try:
             # 1. Calculate Mean Matrix (Mu)
-            # mu = tjs * tis / total
-            # Outer product: (chunk_cells,) x (genes,) -> (chunk_cells, genes)
             mu_chunk = cp.outer(tis_chunk, tjs_gpu) 
             mu_chunk /= total_gpu
             
             # 2. Calculate Base: (1 + Mu / Size)
-            # smoothed_size_gpu is (ng,). Broadcasts correctly against (chunk, ng)
             base = 1.0 + (mu_chunk / smoothed_size_gpu)
             
             # 3. Calculate Probability: Base^(-Size)
             p_is_chunk = cp.power(base, -smoothed_size_gpu)
-            
-            # handle NaNs
             p_is_chunk = cp.nan_to_num(p_is_chunk, nan=0.0)
             
             # 4. Accumulate
@@ -286,18 +279,15 @@ def NBumiCheckFitFSGPU(
 
     print(f"\nPhase [2/2]: COMPLETE{' '*20}")
 
-    # Move results to CPU
     row_ps_cpu = cp.asnumpy(row_ps)
     col_ps_cpu = cp.asnumpy(col_ps)
     
-    # Calculate Error Metrics
     djs = vals['djs'].values
     dis = vals['dis'].values
     
     gene_error = np.sum((djs - row_ps_cpu)**2)
     cell_error = np.sum((dis - col_ps_cpu)**2)
 
-    # Plotting (CPU side)
     if not suppress_plot:
         plt.figure(figsize=(12, 5))
         plt.subplot(1, 2, 1)
@@ -364,7 +354,6 @@ def NBumiCompareModelsGPU(
     size_factors = np.ones_like(cell_sums, dtype=np.float32)
     size_factors[positive_mask] = cell_sums[positive_mask] / median_sum
     
-    # Create Output H5AD structure
     if chunk_size is None:
         chunk_size = calculate_optimal_chunk_size(ng, dtype_size=4, memory_multiplier=4.0)
 
@@ -385,16 +374,22 @@ def NBumiCompareModelsGPU(
         
         current_nnz = 0
         
-        # Read Raw -> Normalize on GPU -> Write to Disk
         for i in range(0, nc, chunk_size):
             end = min(i+chunk_size, nc)
             print(f"Phase [1/4]: Normalizing {end}/{nc}", end='\r')
             
             chunk = adata[i:end].X
-            chunk_gpu = cp.asarray(chunk if not isinstance(chunk, pd.DataFrame) else chunk.values, dtype=cp.float32)
             
-            if csp.issparse(chunk_gpu):
+            # --- SAFE LOAD (SPARSE AWARE) ---
+            if isinstance(chunk, pd.DataFrame):
+                chunk = chunk.values
+
+            if sparse.issparse(chunk):
+                # Load as sparse GPU matrix -> Convert to Dense
+                chunk_gpu = csp.csr_matrix(chunk, dtype=cp.float32)
                 chunk_gpu = chunk_gpu.toarray() 
+            else:
+                chunk_gpu = cp.asarray(chunk, dtype=cp.float32)
             
             # Normalize
             factors_chunk = cp.asarray(size_factors[i:end], dtype=cp.float32)
@@ -411,14 +406,10 @@ def NBumiCompareModelsGPU(
             
             nnz = len(data_cpu)
             
-            # Resize and Write
             d_data.resize(current_nnz + nnz, axis=0)
             d_data[current_nnz:] = data_cpu
-            
             d_indices.resize(current_nnz + nnz, axis=0)
             d_indices[current_nnz:] = indices_cpu
-            
-            # Indptr needs offset adjustment
             new_indptr = indptr_cpu[1:] + current_nnz
             d_indptr[i+1 : end+1] = new_indptr
             
@@ -437,10 +428,7 @@ def NBumiCompareModelsGPU(
 
     # --- Phase 3: Evaluate Fits ---
     print("Phase [3/4]: Evaluating fits...")
-    # Evaluate Adjusted Fit (passed in)
     check_adjust = NBumiCheckFitFSGPU(cleaned_filename, fit_adjust, suppress_plot=True, chunk_size=chunk_size)
-    
-    # Evaluate Basic Fit (calculated above)
     check_basic = NBumiCheckFitFSGPU(cleaned_filename, fit_basic, suppress_plot=True, chunk_size=chunk_size)
     print("Phase [3/4]: COMPLETE")
 
@@ -463,7 +451,6 @@ def NBumiCompareModelsGPU(
         'bas_fit': bas_dropout_fit
     })
 
-    # Plotting (Standard Matplotlib CPU)
     plt.figure(figsize=(10, 6))
     sorted_idx = np.argsort(mean_expr.values)
     
@@ -485,7 +472,6 @@ def NBumiCompareModelsGPU(
         plt.show()
     plt.close()
     
-    # Cleanup
     if os.path.exists(basic_norm_filename):
         os.remove(basic_norm_filename)
         
@@ -503,22 +489,18 @@ def NBumiPlotDispVsMeanGPU(
 ):
     """
     Generates a diagnostic plot of the dispersion vs. mean expression (GPU version).
-    Uses the internal regression helper to ensure consistency.
     """
     print("FUNCTION: NBumiPlotDispVsMeanGPU()")
 
     stats = fit['vals']
     nc = stats['nc']
     
-    # 1. Get Observed Data
     mean_expression = stats['tjs'].values / nc
     sizes = fit['sizes'].values
 
-    # 2. Get Fitted Regression Line
     coeffs = NBumiFitDispVsMean_Internal(fit)
     intercept, slope = coeffs[0], coeffs[1]
 
-    # 3. Handle plotting range
     positive_means = mean_expression[mean_expression > 0]
     if positive_means.size == 0:
         print("WARNING: No positive mean expression values. Skipping plot.")
@@ -533,7 +515,6 @@ def NBumiPlotDispVsMeanGPU(
     log_fitted_sizes = intercept + slope * log_mean_expr_range
     fitted_sizes = np.exp(log_fitted_sizes)
 
-    # 4. Plotting
     plt.figure(figsize=(8, 6))
     plt.scatter(mean_expression, sizes, label='Observed Dispersion', alpha=0.5, s=8)
     plt.plot(np.exp(log_mean_expr_range), fitted_sizes, color='red', label='Regression Fit', linewidth=2)
