@@ -45,7 +45,7 @@ def get_io_chunk_size(filename: str, target_mb: int = 512) -> int:
     
     target_bytes = target_mb * 1024 * 1024
     chunk_size = int(target_bytes / bytes_per_row)
-    chunk_size = max(5000, min(chunk_size, 200000))
+    chunk_size = max(5000, min(chunk_size, 500000)) 
     
     return chunk_size
 
@@ -72,14 +72,16 @@ def get_optimal_chunk_size(*args, **kwargs):
 
 def ConvertDataSparseGPU(input_filename: str, output_filename: str):
     """
-    GPU-Accelerated Cleaning.
-    FIX: Now uses Tiled GPU processing for the Write phase to offload CPU.
+    HYBRID IMPLEMENTATION.
+    Uses CPU (NumPy) for filtering. 
+    REASON: This is an I/O bound task.
     """
     start_time = time.perf_counter()
     print(f"FUNCTION: ConvertDataSparseGPU() | FILE: {input_filename}")
+    print("  > MODE: CPU Optimized (Bypassing GPU for I/O efficiency)")
 
-    # 1. READ IO
-    read_chunk_size = get_io_chunk_size(input_filename, target_mb=512)
+    # 1. READ IO (Aggressive Chunking for CPU)
+    read_chunk_size = get_io_chunk_size(input_filename, target_mb=1024)
     
     with h5py.File(input_filename, 'r') as f_in:
         x_group_in = f_in['X']
@@ -87,10 +89,8 @@ def ConvertDataSparseGPU(input_filename: str, output_filename: str):
         
         print(f"Phase [1/2]: Identifying genes with non-zero counts... (Chunk: {read_chunk_size})")
         
-        if HAS_GPU:
-            genes_to_keep_mask = cupy.zeros(n_genes, dtype=bool)
-        else:
-            genes_to_keep_mask = np.zeros(n_genes, dtype=bool)
+        # CPU Mask
+        genes_to_keep_mask = np.zeros(n_genes, dtype=bool)
             
         h5_indptr = x_group_in['indptr']
         h5_indices = x_group_in['indices']
@@ -102,41 +102,21 @@ def ConvertDataSparseGPU(input_filename: str, output_filename: str):
             start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
             if start_idx == end_idx: continue
             
+            # Load indices (Disk -> RAM)
             indices_cpu = h5_indices[start_idx:end_idx]
+            
+            # Compute Unique (Fast on CPU L3 Cache)
+            unique_cpu = np.unique(indices_cpu)
+            genes_to_keep_mask[unique_cpu] = True
 
-            if HAS_GPU:
-                indices_gpu = cupy.asarray(indices_cpu)
-                unique_gpu = cupy.unique(indices_gpu)
-                genes_to_keep_mask[unique_gpu] = True
-                del indices_gpu, unique_gpu
-                if i % (read_chunk_size * 5) == 0:
-                    cupy.get_default_memory_pool().free_all_blocks()
-            else:
-                unique_cpu = np.unique(indices_cpu)
-                genes_to_keep_mask[unique_cpu] = True
-
-        if HAS_GPU:
-            genes_to_keep_mask_cpu = cupy.asnumpy(genes_to_keep_mask)
-            genes_to_keep_mask_gpu = genes_to_keep_mask # Keep on GPU for Phase 2
-        else:
-            genes_to_keep_mask_cpu = genes_to_keep_mask
-
-        n_genes_to_keep = np.sum(genes_to_keep_mask_cpu)
+        n_genes_to_keep = np.sum(genes_to_keep_mask)
         print(f"\nPhase [1/2]: COMPLETE | Result: {n_genes_to_keep} / {n_genes} genes retained.")
 
         # 2. WRITE IO
-        # We read big chunks, but process on GPU in tiles to avoid OOM
-        io_chunk_size = read_chunk_size 
-        
-        # Calculate safe tile size for sparse matrix construction on GPU
-        # Sparse matrices are smaller, so we can use a larger tile than dense
-        # But let's be safe. ~50k rows sparse is usually fine.
-        compute_tile_size = 50000 
-        
-        print(f"Phase [2/2]: Filtering & Saving (I/O: {io_chunk_size}, GPU Tile: {compute_tile_size})...")
+        print(f"Phase [2/2]: Filtering & Saving (CPU Stream)...")
         
         adata_meta = anndata.read_h5ad(input_filename, backed='r')
-        filtered_var_df = adata_meta.var[genes_to_keep_mask_cpu]
+        filtered_var_df = adata_meta.var[genes_to_keep_mask]
         
         adata_out_template = anndata.AnnData(obs=adata_meta.obs, var=filtered_var_df, uns=adata_meta.uns)
         adata_out_template.write_h5ad(output_filename, compression="gzip")
@@ -153,85 +133,38 @@ def ConvertDataSparseGPU(input_filename: str, output_filename: str):
             current_nnz = 0
             h5_data = x_group_in['data']
 
-            # OUTER LOOP: DISK I/O
-            for i in range(0, n_cells, io_chunk_size):
-                end_row = min(i + io_chunk_size, n_cells)
+            # CPU Stream Loop
+            for i in range(0, n_cells, read_chunk_size):
+                end_row = min(i + read_chunk_size, n_cells)
                 print(f"Phase [2/2]: Processing: {end_row} of {n_cells} cells.", end='\r')
 
-                start_idx_global, end_idx_global = h5_indptr[i], h5_indptr[end_row]
+                start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
                 
-                # Read RAW Data (Fastest)
-                data_raw = h5_data[start_idx_global:end_idx_global]
-                indices_raw = h5_indices[start_idx_global:end_idx_global]
-                indptr_raw = h5_indptr[i:end_row+1] - h5_indptr[i]
-                
-                # Accumulators for the processed chunk
-                processed_data = []
-                processed_indices = []
-                processed_indptr = [0]
-                chunk_nnz_accum = 0
+                # Read Block
+                data_slice = h5_data[start_idx:end_idx]
+                indices_slice = h5_indices[start_idx:end_idx]
+                indptr_slice = h5_indptr[i:end_row+1] - h5_indptr[i]
 
-                # INNER LOOP: GPU PROCESSING
-                # We process the raw arrays in tiles to allow GPU filtering
-                n_rows_in_chunk = end_row - i
+                # Sparse Construct (CPU)
+                chunk = sp_csr_matrix((data_slice, indices_slice, indptr_slice), shape=(end_row-i, n_genes))
                 
-                for j in range(0, n_rows_in_chunk, compute_tile_size):
-                    tile_end_local = min(j + compute_tile_size, n_rows_in_chunk)
-                    
-                    # Slice the RAW arrays for this tile
-                    # We need to find where in 'data_raw' this tile starts/ends
-                    p_start = indptr_raw[j]
-                    p_end = indptr_raw[tile_end_local]
-                    
-                    if p_start == p_end:
-                        # Empty tile, just append zeros to indptr
-                        processed_indptr.extend([chunk_nnz_accum] * (tile_end_local - j))
-                        continue
-                        
-                    d_tile = cupy.asarray(data_raw[p_start:p_end])
-                    i_tile = cupy.asarray(indices_raw[p_start:p_end])
-                    p_tile = cupy.asarray(indptr_raw[j:tile_end_local+1] - indptr_raw[j])
-                    
-                    # Construct GPU CSR
-                    tile_csr = cp_csr_matrix((d_tile, i_tile, p_tile), shape=(tile_end_local - j, n_genes))
-                    
-                    # FILTER (Fast GPU boolean indexing)
-                    filtered_tile = tile_csr[:, genes_to_keep_mask_gpu]
-                    
-                    # CEIL (Fast GPU math)
-                    filtered_tile.data = cupy.ceil(filtered_tile.data).astype(cupy.float32)
-                    
-                    # Collect results
-                    processed_data.append(filtered_tile.data.get())
-                    processed_indices.append(filtered_tile.indices.get())
-                    
-                    # Adjust indptr to be relative to the start of the chunk
-                    new_ptrs = filtered_tile.indptr[1:].get() + chunk_nnz_accum
-                    processed_indptr.extend(new_ptrs)
-                    
-                    chunk_nnz_accum += filtered_tile.nnz
-                    
-                    del d_tile, i_tile, p_tile, tile_csr, filtered_tile
-                    cupy.get_default_memory_pool().free_all_blocks()
+                # Filter (CPU is very fast at boolean indexing on sparse cols)
+                filtered_chunk = chunk[:, genes_to_keep_mask]
+                
+                # Ceil (CPU Vectorized)
+                filtered_chunk.data = np.ceil(filtered_chunk.data).astype('float32')
 
-                # Concatenate and Write
-                if chunk_nnz_accum > 0:
-                    final_data = np.concatenate(processed_data)
-                    final_indices = np.concatenate(processed_indices)
-                    
-                    out_data.resize(current_nnz + chunk_nnz_accum, axis=0)
-                    out_data[current_nnz:] = final_data
+                # Write Block
+                out_data.resize(current_nnz + filtered_chunk.nnz, axis=0)
+                out_data[current_nnz:] = filtered_chunk.data
 
-                    out_indices.resize(current_nnz + chunk_nnz_accum, axis=0)
-                    out_indices[current_nnz:] = final_indices
+                out_indices.resize(current_nnz + filtered_chunk.nnz, axis=0)
+                out_indices[current_nnz:] = filtered_chunk.indices
+
+                new_indptr_list = filtered_chunk.indptr[1:].astype(np.int64) + current_nnz
+                out_indptr[i + 1 : end_row + 1] = new_indptr_list
                 
-                # Write Indptr
-                # processed_indptr contains relative pointers for the chunk. 
-                # We need to add current_nnz to make them global.
-                final_indptr = np.array(processed_indptr[1:], dtype=np.int64) + current_nnz
-                out_indptr[i + 1 : end_row + 1] = final_indptr
-                
-                current_nnz += chunk_nnz_accum
+                current_nnz += filtered_chunk.nnz
 
             x_group_out.attrs['encoding-type'] = 'csr_matrix'
             x_group_out.attrs['encoding-version'] = '0.1.0'
@@ -243,11 +176,12 @@ def ConvertDataSparseGPU(input_filename: str, output_filename: str):
 
 def hidden_calc_valsGPU(filename: str) -> dict:
     """ 
-    Calculates stats. 
-    FIX: Added explicit casting to Int32 for nnz calculation to prevent TypeErrors.
+    HYBRID IMPLEMENTATION.
+    Uses CPU (NumPy) for summation to avoid Float/Int casting crash.
     """
     start_time = time.perf_counter()
     print(f"FUNCTION: hidden_calc_vals() | FILE: {filename}")
+    print("  > MODE: CPU Optimized (Stable)")
 
     chunk_size = get_io_chunk_size(filename, target_mb=1024) 
 
@@ -256,14 +190,13 @@ def hidden_calc_valsGPU(filename: str) -> dict:
     print("Phase [1/3]: Finding nc and ng...")
     print(f"Phase [1/3]: COMPLETE")
 
+    # CPU Accumulators
     tis = np.zeros(nc, dtype='int64')
     cell_non_zeros = np.zeros(nc, dtype='int64')
+    tjs = np.zeros(ng, dtype='float64') 
+    gene_non_zeros = np.zeros(ng, dtype='int64')
     
-    # Accumulators on GPU
-    tjs_gpu = cupy.zeros(ng, dtype=cupy.float32)
-    gene_non_zeros_gpu = cupy.zeros(ng, dtype=cupy.int32)
-    
-    print("Phase [2/3]: Calculating tis and tjs...")
+    print("Phase [2/3]: Calculating tis and tjs (CPU)...")
     with h5py.File(filename, 'r') as f_in:
         x_group = f_in['X']
         h5_indptr = x_group['indptr']
@@ -276,25 +209,25 @@ def hidden_calc_valsGPU(filename: str) -> dict:
 
             start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
             
-            data_gpu = cupy.asarray(h5_data[start_idx:end_idx], dtype=cupy.float32)
-            indices_gpu = cupy.asarray(h5_indices[start_idx:end_idx])
-            indptr_gpu = cupy.asarray(h5_indptr[i:end_row+1] - h5_indptr[i])
+            # Read to RAM
+            data_cpu = h5_data[start_idx:end_idx]
+            indices_cpu = h5_indices[start_idx:end_idx]
+            indptr_cpu = h5_indptr[i:end_row+1] - h5_indptr[i]
 
-            chunk_gpu = cp_csr_matrix((data_gpu, indices_gpu, indptr_gpu), shape=(end_row-i, ng))
+            # Construct Sparse Matrix
+            chunk_cpu = sp_csr_matrix((data_cpu, indices_cpu, indptr_cpu), shape=(end_row-i, ng))
 
-            tis[i:end_row] = chunk_gpu.sum(axis=1).get().flatten()
-            cell_non_zeros[i:end_row] = cupy.diff(indptr_gpu).get()
+            # Row stats
+            tis[i:end_row] = chunk_cpu.sum(axis=1).flatten()
+            cell_non_zeros[i:end_row] = np.diff(indptr_cpu)
 
-            tjs_gpu += chunk_gpu.sum(axis=0).ravel()
+            # Col stats (Accumulate in L3 Cache)
+            tjs += chunk_cpu.sum(axis=0).A1 
             
-            chunk_gpu.data[:] = 1
-            # !!! FIX: Explicit cast to int32 !!!
-            gene_non_zeros_gpu += chunk_gpu.sum(axis=0).ravel().astype(cupy.int32)
-            
-            del data_gpu, indices_gpu, indptr_gpu, chunk_gpu
+            # Col NNZ
+            chunk_cpu.data[:] = 1
+            gene_non_zeros += chunk_cpu.sum(axis=0).A1.astype(np.int64)
 
-    tjs = cupy.asnumpy(tjs_gpu)
-    gene_non_zeros = cupy.asnumpy(gene_non_zeros_gpu)
     print(f"\nPhase [2/3]: COMPLETE{' ' * 50}")
 
     print("Phase [3/3]: Calculating dis, djs, and total...")
@@ -316,24 +249,26 @@ def hidden_calc_valsGPU(filename: str) -> dict:
         "ng": ng
     }
 
-# ... [NBumiFitModelGPU, NBumiFitDispVsMeanGPU, NBumiFeatureSelectionHighVarGPU, NBumiFeatureSelectionCombinedDropGPU, NBumiCombinedDropVolcanoGPU remain unchanged from previous stable version] ...
-# (Include them here or ensure they are preserved in your file)
-# For brevity, I am assuming you have the previous working versions of these.
-# If you need me to paste the ENTIRE file again with these changes, just ask.
-# But `hidden_calc_valsGPU` and `ConvertDataSparseGPU` were the only modified functions above.
-# To be safe, I will paste the REST of the file below to ensure a complete copy-paste.
-
 def NBumiFitModelGPU(cleaned_filename: str, stats: dict) -> dict:
+    """
+    GPU IMPLEMENTATION (Fixed Tiled).
+    Prevents OOM by slicing the large I/O chunk into small GPU tiles.
+    """
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiFitModel() | FILE: {cleaned_filename}")
+    print("  > MODE: GPU Accelerated (Tiled Memory Safety)")
     
-    chunk_size = get_io_chunk_size(cleaned_filename, target_mb=1024)
+    # Large chunk for Disk (1GB+)
+    io_chunk_size = get_io_chunk_size(cleaned_filename, target_mb=1024)
+    # Small tile for GPU (50k rows or auto)
+    compute_tile_size = 50000 
     
     tjs = stats['tjs'].values
     tis = stats['tis'].values
     nc, ng = stats['nc'], stats['ng']
     total = stats['total']
     
+    # Move global stats to GPU
     tjs_gpu = cupy.asarray(tjs, dtype=cupy.float64)
     tis_gpu = cupy.asarray(tis, dtype=cupy.float64)
     
@@ -345,40 +280,66 @@ def NBumiFitModelGPU(cleaned_filename: str, stats: dict) -> dict:
     sum_mu_sq_gpu = (tjs_gpu**2 / total**2) * sum_tis_sq_gpu
     print("Phase [1/3]: COMPLETE")
     
-    print("Phase [2/3]: Calculating variance components from data chunks...")
+    print("Phase [2/3]: Calculating variance components (Hybrid Tiled)...")
     with h5py.File(cleaned_filename, 'r') as f_in:
         x_group = f_in['X']
         h5_indptr = x_group['indptr']
         h5_data = x_group['data']
         h5_indices = x_group['indices']
         
-        for i in range(0, nc, chunk_size):
-            end_row = min(i + chunk_size, nc)
+        # OUTER LOOP: Disk I/O (Chunked)
+        for i in range(0, nc, io_chunk_size):
+            end_row = min(i + io_chunk_size, nc)
             print(f"Phase [2/3]: Processing: {end_row} of {nc} cells.", end='\r')
             
-            start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
-            if start_idx == end_idx: continue
+            start_idx_global, end_idx_global = h5_indptr[i], h5_indptr[end_row]
+            if start_idx_global == end_idx_global: continue
             
-            data_gpu = cupy.asarray(h5_data[start_idx:end_idx], dtype=cupy.float64)
-            indices_gpu = cupy.asarray(h5_indices[start_idx:end_idx])
-            indptr_gpu = cupy.asarray(h5_indptr[i:end_row+1] - h5_indptr[i])
+            # Read Raw Data to RAM
+            data_raw = h5_data[start_idx_global:end_idx_global]
+            indices_raw = h5_indices[start_idx_global:end_idx_global]
+            indptr_raw = h5_indptr[i:end_row+1] - h5_indptr[i]
             
-            cupy.add.at(sum_x_sq_gpu, indices_gpu, data_gpu**2)
+            n_rows_in_chunk = end_row - i
             
-            nnz_in_chunk = indptr_gpu[-1].item()
-            row_boundaries = cupy.zeros(nnz_in_chunk, dtype=cupy.int32)
-            if len(indptr_gpu) > 1:
-                row_boundaries[indptr_gpu[:-1]] = 1
-            row_indices_gpu = (cupy.cumsum(row_boundaries, axis=0) - 1) + i
-            
-            tis_per_nz = tis_gpu[row_indices_gpu]
-            tjs_per_nz = tjs_gpu[indices_gpu]
-            
-            term_vals = 2 * data_gpu * tjs_per_nz * tis_per_nz / total
-            cupy.add.at(sum_2xmu_gpu, indices_gpu, term_vals)
-            
-            del data_gpu, indices_gpu, indptr_gpu, row_indices_gpu, tis_per_nz, tjs_per_nz, term_vals
-            if i % (chunk_size * 2) == 0:
+            # INNER LOOP: GPU Compute (Tiled)
+            for j in range(0, n_rows_in_chunk, compute_tile_size):
+                tile_end_local = min(j + compute_tile_size, n_rows_in_chunk)
+                
+                # Identify data range for this tile
+                p_start = indptr_raw[j]
+                p_end = indptr_raw[tile_end_local]
+                
+                if p_start == p_end: continue
+
+                # Load Tile to GPU
+                data_gpu = cupy.asarray(data_raw[p_start:p_end], dtype=cupy.float64)
+                indices_gpu = cupy.asarray(indices_raw[p_start:p_end])
+                indptr_gpu = cupy.asarray(indptr_raw[j:tile_end_local+1] - indptr_raw[j])
+                
+                # 1. Sum X^2
+                cupy.add.at(sum_x_sq_gpu, indices_gpu, data_gpu**2)
+                
+                # 2. Sum 2*X*mu
+                # Expand row indices for this tile
+                nnz_tile = p_end - p_start
+                row_boundaries = cupy.zeros(nnz_tile, dtype=cupy.int32)
+                if len(indptr_gpu) > 1:
+                    row_boundaries[indptr_gpu[:-1]] = 1
+                
+                # Global row indices for looking up 'tis'
+                # row_offset = global_start (i) + local_tile_start (j)
+                row_offset = i + j
+                row_indices_gpu = (cupy.cumsum(row_boundaries, axis=0) - 1) + row_offset
+                
+                tis_per_nz = tis_gpu[row_indices_gpu]
+                tjs_per_nz = tjs_gpu[indices_gpu]
+                
+                term_vals = 2 * data_gpu * tjs_per_nz * tis_per_nz / total
+                cupy.add.at(sum_2xmu_gpu, indices_gpu, term_vals)
+                
+                # Cleanup Tile
+                del data_gpu, indices_gpu, indptr_gpu, row_indices_gpu, tis_per_nz, tjs_per_nz, term_vals
                 cupy.get_default_memory_pool().free_all_blocks()
     
     print(f"\nPhase [2/3]: COMPLETE {' ' * 50}")
@@ -464,8 +425,13 @@ def NBumiFeatureSelectionHighVarGPU(fit: dict) -> pd.DataFrame:
     return final_table
 
 def NBumiFeatureSelectionCombinedDropGPU(fit: dict, cleaned_filename: str, method="fdr_bh", qval_thresh=0.05) -> pd.DataFrame:
+    """
+    GPU IMPLEMENTATION (Tiled).
+    REASON: Heavy dense matrix math (exp, power). 
+    """
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiFeatureSelectionCombinedDrop() | FILE: {cleaned_filename}")
+    print("  > MODE: GPU Accelerated (Dense Matrix Operations)")
 
     io_chunk_size = get_io_chunk_size(cleaned_filename, target_mb=512)
     vals = fit['vals']
