@@ -300,8 +300,8 @@ def NBumiCompareModelsGPU(
                 sf_chunk_gpu = cupy.asarray(sf_chunk, dtype=cupy.float32)
                 
                 # 2. Expand to match data array
-                # Calculate row lengths to repeat
-                row_lens = cupy.diff(cupy.asarray(indptr_slice))
+                # Calculate row lengths to repeat (MUST BE CPU NUMPY ARRAY)
+                row_lens = np.diff(indptr_slice) 
                 sf_expanded_gpu = cupy.repeat(sf_chunk_gpu, row_lens)
                 
                 # 3. Divide and Round
