@@ -41,7 +41,7 @@ from .coreGPU import (
     NBumiFeatureSelectionHighVarGPU,
     NBumiFeatureSelectionCombinedDropGPU,
     NBumiCombinedDropVolcanoGPU,
-    get_optimal_chunk_size  # <--- RESTORED: Governor Protocol
+    get_optimal_chunk_size  # <--- CRITICAL: Matches the Governor Protocol
 )
 
 # From diagnosticsGPU.py
@@ -92,7 +92,7 @@ __all__ = [
     'NBumiFeatureSelectionHighVarGPU',
     'NBumiFeatureSelectionCombinedDropGPU',
     'NBumiCombinedDropVolcanoGPU',
-    'get_optimal_chunk_size', # <--- RESTORED
+    'get_optimal_chunk_size', 
     
     # diagnosticsGPU
     'NBumiFitBasicModelGPU',
