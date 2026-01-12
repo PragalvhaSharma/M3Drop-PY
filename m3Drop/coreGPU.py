@@ -29,41 +29,53 @@ except ImportError:
 def get_io_chunk_size(filename: str, target_mb: int = 512) -> int:
     """
     Calculates a large chunk size for Disk I/O (Lustre/GPFS friendly).
+    Targeting ~512MB-1GB per read ensures high throughput on Supercomputers.
     """
     with h5py.File(filename, 'r') as f:
         x_group = f['X']
         shape = x_group.attrs['shape']
         n_cells, n_genes = shape[0], shape[1]
         
+        # Estimate sparsity (default to 10% if unknown)
         if 'indptr' in x_group:
             nnz = x_group['indptr'][-1]
-            bytes_per_row = (nnz / n_cells) * 12 
+            bytes_per_row = (nnz / n_cells) * 12 # 4 bytes data + 4 bytes index + overhead
         else:
+            # Fallback for dense-like estimation
             bytes_per_row = n_genes * 4 * 0.1 
             
     if bytes_per_row < 1: bytes_per_row = 1
     
+    # Calculate rows to hit target MB
     target_bytes = target_mb * 1024 * 1024
     chunk_size = int(target_bytes / bytes_per_row)
-    chunk_size = max(5000, min(chunk_size, 500000)) 
+    
+    # Cap to reasonable limits for CPU RAM
+    chunk_size = max(5000, min(chunk_size, 500000))
     
     return chunk_size
 
 def get_compute_tile_size(n_genes: int, vram_limit_gb: float = 9.0) -> int:
     """
-    Calculates max 'Micro-Batch' size for dense GPU operations.
+    Calculates the max 'Micro-Batch' size for dense GPU operations 
+    given the VRAM constraints (default 9GB safe limit for 10GB slice).
     """
-    bytes_per_element = 8 
-    matrices_needed = 3   
+    bytes_per_element = 8 # float64 (Double Precision)
+    matrices_needed = 3   # mu, p_is, p_var (approx active at once)
     
     bytes_per_row_dense = n_genes * bytes_per_element * matrices_needed
+    
     total_vram_bytes = vram_limit_gb * 1024**3
     tile_size = int(total_vram_bytes / bytes_per_row_dense)
     
-    return max(100, min(tile_size, 20000))
+    # Safety margin: Cap at 50k (Empirically safe for A100/V100 10GB split)
+    return max(100, min(tile_size, 50000))
 
-# --- LEGACY ALIAS ---
+# --- LEGACY ALIAS FOR BACKWARD COMPATIBILITY ---
 def get_optimal_chunk_size(*args, **kwargs):
+    """
+    Legacy stub. Redirects to get_io_chunk_size.
+    """
     if args and isinstance(args[0], str):
         return get_io_chunk_size(args[0])
     return 5000
@@ -74,7 +86,8 @@ def ConvertDataSparseGPU(input_filename: str, output_filename: str):
     """
     HYBRID IMPLEMENTATION.
     Uses CPU (NumPy) for filtering. 
-    REASON: This is an I/O bound task.
+    REASON: This is an I/O bound task. Moving data to GPU for boolean masking 
+    is slower than just doing it on the CPU due to PCIe latency.
     """
     start_time = time.perf_counter()
     print(f"FUNCTION: ConvertDataSparseGPU() | FILE: {input_filename}")
@@ -177,7 +190,8 @@ def ConvertDataSparseGPU(input_filename: str, output_filename: str):
 def hidden_calc_valsGPU(filename: str) -> dict:
     """ 
     HYBRID IMPLEMENTATION.
-    Uses CPU (NumPy) for summation to avoid Float/Int casting crash.
+    Uses CPU (NumPy) for summation.
+    REASON: Calculating sums is memory-bound. GPU transfer overhead > Compute time.
     """
     start_time = time.perf_counter()
     print(f"FUNCTION: hidden_calc_vals() | FILE: {filename}")
@@ -261,7 +275,7 @@ def NBumiFitModelGPU(cleaned_filename: str, stats: dict) -> dict:
     # Large chunk for Disk (1GB+)
     io_chunk_size = get_io_chunk_size(cleaned_filename, target_mb=1024)
     # Small tile for GPU (50k rows or auto)
-    compute_tile_size = 50000 
+    compute_tile_size = get_compute_tile_size(stats['ng'], vram_limit_gb=9.0)
     
     tjs = stats['tjs'].values
     tis = stats['tis'].values
@@ -280,7 +294,7 @@ def NBumiFitModelGPU(cleaned_filename: str, stats: dict) -> dict:
     sum_mu_sq_gpu = (tjs_gpu**2 / total**2) * sum_tis_sq_gpu
     print("Phase [1/3]: COMPLETE")
     
-    print("Phase [2/3]: Calculating variance components (Hybrid Tiled)...")
+    print(f"Phase [2/3]: Calculating variance (I/O: {io_chunk_size}, Tile: {compute_tile_size})...")
     with h5py.File(cleaned_filename, 'r') as f_in:
         x_group = f_in['X']
         h5_indptr = x_group['indptr']
@@ -452,11 +466,13 @@ def NBumiFeatureSelectionCombinedDropGPU(fit: dict, cleaned_filename: str, metho
     p_var_sum_gpu = cupy.zeros(ng, dtype=cupy.float64)
     print("Phase [1/3]: COMPLETE")
 
-    print("Phase [2/3]: Calculating expected dropout sums...")
+    print(f"Phase [2/3]: Calculating expected dropout sums (Tile: {compute_tile_size})...")
+    # Outer Loop (IO)
     for i in range(0, nc, io_chunk_size):
         end_col = min(i + io_chunk_size, nc)
         print(f"Phase [2/3]: Processing: {end_col} of {nc} cells.", end='\r')
         
+        # Inner Loop (GPU)
         for j in range(i, end_col, compute_tile_size):
             tile_end = min(j + compute_tile_size, end_col)
             
