@@ -291,18 +291,25 @@ def NBumiCompareModelsGPU(
                 # Convert to GPU
                 data_gpu = cupy.asarray(data_slice, dtype=cupy.float32)
                 
-                # Apply Size Factors (Slice appropriate size factors for this chunk)
-                # Note: We need to expand size_factors to match the data structure (CSR)
-                # Efficient approach: Repeat size factor for each non-zero element in the row
+                # Apply Size Factors
                 
-                # 1. Get size factors for this chunk of cells
+                # 1. Get size factors for this chunk of cells (CPU)
                 sf_chunk = size_factors[i:end_row]
                 sf_chunk_gpu = cupy.asarray(sf_chunk, dtype=cupy.float32)
                 
                 # 2. Expand to match data array
-                # Calculate row lengths to repeat (MUST BE CPU NUMPY ARRAY)
+                # ROBUST FIX: Use CPU Indexing instead of fragile cupy.repeat
+                # Calculate row lengths (CPU)
                 row_lens = np.diff(indptr_slice) 
-                sf_expanded_gpu = cupy.repeat(sf_chunk_gpu, row_lens)
+                
+                # Generate indices to repeat (CPU) -> [0, 0, 1, 1, 1, ...]
+                repeat_indices_cpu = np.repeat(np.arange(len(sf_chunk)), row_lens)
+                
+                # Move indices to GPU
+                repeat_indices_gpu = cupy.asarray(repeat_indices_cpu)
+                
+                # Gather values using fancy indexing (GPU)
+                sf_expanded_gpu = sf_chunk_gpu[repeat_indices_gpu]
                 
                 # 3. Divide and Round
                 data_gpu = data_gpu / sf_expanded_gpu
@@ -324,7 +331,7 @@ def NBumiCompareModelsGPU(
                 current_nnz += len(filtered_data)
                 
                 # Cleanup
-                del data_gpu, sf_chunk_gpu, sf_expanded_gpu
+                del data_gpu, sf_chunk_gpu, sf_expanded_gpu, repeat_indices_gpu
                 cupy.get_default_memory_pool().free_all_blocks()
 
     print(f"\nPhase [1/4]: COMPLETE | Saved: {basic_norm_filename}{' '*20}")
