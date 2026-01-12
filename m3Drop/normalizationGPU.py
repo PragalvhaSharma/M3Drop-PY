@@ -91,6 +91,9 @@ def NBumiPearsonResidualsGPU(
                 
                 denominator_gpu = cupy.sqrt(mus_chunk_gpu + mus_chunk_gpu**2 / sizes_gpu[cupy.newaxis, :])
                 
+                # --- LOGIC RESTORED: Prevent Division by Zero ---
+                denominator_gpu = cupy.where(denominator_gpu == 0, 1, denominator_gpu)
+
                 # (Counts - Mu) / Sqrt(V)
                 pearson_chunk_gpu = (counts_chunk_dense_gpu - mus_chunk_gpu) / denominator_gpu
                 
@@ -102,6 +105,10 @@ def NBumiPearsonResidualsGPU(
                 cupy.get_default_memory_pool().free_all_blocks()
         
         print(f"Phase [2/2]: COMPLETE{' '*50}")
+
+    # --- LOGIC RESTORED: Explicit File Cleanup ---
+    if hasattr(adata_in, "file") and adata_in.file is not None:
+        adata_in.file.close()
 
     end_time = time.perf_counter()
     print(f"Total time: {end_time - start_time:.2f} seconds.\n")
@@ -179,6 +186,9 @@ def NBumiPearsonResidualsApproxGPU(
                 # Approx: Denom = Sqrt(Mu)
                 denominator_gpu = cupy.sqrt(mus_chunk_gpu)
                 
+                # --- LOGIC RESTORED: Prevent Division by Zero ---
+                denominator_gpu = cupy.where(denominator_gpu == 0, 1, denominator_gpu)
+                
                 pearson_chunk_gpu = (counts_chunk_dense_gpu - mus_chunk_gpu) / denominator_gpu
                 
                 out_x[i:end_row, :] = pearson_chunk_gpu.get()
@@ -187,6 +197,10 @@ def NBumiPearsonResidualsApproxGPU(
                 cupy.get_default_memory_pool().free_all_blocks()
         
         print(f"Phase [2/2]: COMPLETE{' '*50}")
+
+    # --- LOGIC RESTORED: Explicit File Cleanup ---
+    if hasattr(adata_in, "file") and adata_in.file is not None:
+        adata_in.file.close()
 
     end_time = time.perf_counter()
     print(f"Total time: {end_time - start_time:.2f} seconds.\n")
