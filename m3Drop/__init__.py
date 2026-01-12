@@ -41,9 +41,7 @@ from .coreGPU import (
     NBumiFeatureSelectionHighVarGPU,
     NBumiFeatureSelectionCombinedDropGPU,
     NBumiCombinedDropVolcanoGPU,
-    get_io_chunk_size,      # <--- NEW: For Safe Disk I/O
-    get_compute_tile_size,  # <--- NEW: For Safe GPU Memory
-    get_optimal_chunk_size  # Kept for backward compatibility
+    get_optimal_chunk_size  # <--- RESTORED: Governor Protocol
 )
 
 # From diagnosticsGPU.py
@@ -94,9 +92,7 @@ __all__ = [
     'NBumiFeatureSelectionHighVarGPU',
     'NBumiFeatureSelectionCombinedDropGPU',
     'NBumiCombinedDropVolcanoGPU',
-    'get_io_chunk_size',
-    'get_compute_tile_size',
-    'get_optimal_chunk_size',
+    'get_optimal_chunk_size', # <--- RESTORED
     
     # diagnosticsGPU
     'NBumiFitBasicModelGPU',
