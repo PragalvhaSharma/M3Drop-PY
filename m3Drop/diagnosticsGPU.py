@@ -81,7 +81,7 @@ def calculate_optimal_chunk_size(n_vars, dtype_size=4, memory_multiplier=3.0, ov
 # PIPELINE FUNCTIONS
 # ==============================================================================
 
-def NBumiFitBasicModel(adata_path, output_path="test_data_basic_fit.pkl"):
+def NBumiFitBasicModelGPU(adata_path, output_path="test_data_basic_fit.pkl"):
     """
     Fits the basic model (depth-adjusted means) on GPU.
     """
@@ -309,3 +309,4 @@ if __name__ == "__main__":
         fname = "test_data_cleaned.h5ad"
         
     NBumiCompareModelsGPU(fname)
+
