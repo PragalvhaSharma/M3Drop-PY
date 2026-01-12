@@ -54,7 +54,7 @@ def calculate_optimal_chunk_size(n_vars, dtype_size=4, memory_multiplier=3.0, ov
     return max(1, optimal_chunk)
 
 # ==============================================================================
-# HELPER FUNCTIONS (Replacements for missing imports)
+# HELPER FUNCTIONS 
 # ==============================================================================
 
 def NBumiFitDispVsMean_Internal(fit_data):
@@ -62,9 +62,9 @@ def NBumiFitDispVsMean_Internal(fit_data):
     Performs the log-log linear regression of Dispersion (size) vs Mean Expression.
     Used to smooth the size parameters for the dropout check.
     """
-    stats = fit_data['vals']
+    stats_data = fit_data['vals']
     sizes = fit_data['sizes'].values
-    means = stats['tjs'].values / stats['nc']
+    means = stats_data['tjs'].values / stats_data['nc']
 
     # Filter for valid regression points
     mask = (means > 0) & (sizes > 0) & np.isfinite(sizes) & np.isfinite(means)
@@ -85,7 +85,7 @@ def get_basic_stats(adata_path, chunk_size=10000):
     nc, ng = adata.shape
     
     sum_x = cp.zeros(ng, dtype=cp.float64)
-    sum_sq = cp.zeros(ng, dtype=cp.float64)
+    # sum_sq = cp.zeros(ng, dtype=cp.float64) # Not strictly needed for basic stats return, but good for fit
     djs = cp.zeros(ng, dtype=cp.int64) # Dropout count per gene
     dis = cp.zeros(nc, dtype=cp.int64) # Dropout count per cell
     tis = cp.zeros(nc, dtype=cp.float64) # Total counts per cell
@@ -102,7 +102,7 @@ def get_basic_stats(adata_path, chunk_size=10000):
             chunk_gpu = chunk_gpu.toarray()
             
         sum_x += cp.sum(chunk_gpu, axis=0)
-        sum_sq += cp.sum(chunk_gpu**2, axis=0)
+        # sum_sq += cp.sum(chunk_gpu**2, axis=0)
         
         # Dropouts (zeros)
         is_zero = (chunk_gpu == 0)
@@ -150,9 +150,6 @@ def NBumiFitBasicModelGPU(
         chunk_size = calculate_optimal_chunk_size(ng, dtype_size=4, memory_multiplier=3.0)
 
     # 1. Calculate Sum of Squares (Variance)
-    # We re-calculate sum_x_sq here or pass it? CPU version recalculates it from file.
-    # To match logic exactly, we scan file.
-    
     sum_x_sq = cp.zeros(ng, dtype=cp.float64)
     
     adata = sc.read_h5ad(cleaned_filename, backed='r')
@@ -220,7 +217,6 @@ def NBumiCheckFitFSGPU(
     print(f"FUNCTION: NBumiCheckFitFSGPU() | FILE: {cleaned_filename}")
 
     # 1. Get Smoothed Size Parameters (Regression)
-    # CPU version calls NBumiFitDispVsMeanCPU. We use our internal helper.
     coeffs = NBumiFitDispVsMean_Internal(fit)
     intercept, slope = coeffs[0], coeffs[1]
     
@@ -238,14 +234,15 @@ def NBumiCheckFitFSGPU(
     
     # Move constants to GPU
     tjs_gpu = cp.asarray(tjs, dtype=cp.float32)
-    tis_gpu = cp.asarray(tis, dtype=cp.float32)
+    # tis_gpu = cp.asarray(tis, dtype=cp.float32) # Loaded per chunk usually
     smoothed_size_gpu = cp.asarray(smoothed_size, dtype=cp.float32)
-    total_gpu = float(total) # Scalar
+    total_gpu = float(total)
 
     row_ps = cp.zeros(ng, dtype=cp.float64)
     col_ps = cp.zeros(nc, dtype=cp.float64)
-
-    adata = sc.read_h5ad(cleaned_filename, backed='r')
+    
+    # Pre-load TIS to GPU for slicing
+    tis_gpu_full = cp.asarray(tis, dtype=cp.float32)
 
     if chunk_size is None:
         # Use multiplier 5.0 because of the broadcasting overhead below
@@ -257,25 +254,12 @@ def NBumiCheckFitFSGPU(
         print(f"Phase [2/2]: Processing: {end} of {nc} cells.", end='\r')
         
         # Load Chunk (Tis for this chunk)
-        tis_chunk = tis_gpu[i:end]
-        
-        # NB Model Logic: P(0) = (1 + mu/k)^-k
-        # mu = (total_gene_counts * total_cell_counts) / global_total
-        # This is an outer product: (ng, 1) * (1, chunk_size) -> (ng, chunk_size)
-        
-        # We compute mu_chunk implicitly to save memory or explicitly if space allows.
-        # mu = tjs * tis / total
-        
-        # Expand dims for broadcasting
-        # tjs_gpu: (ng,) -> (1, ng) to align with cells in rows? 
-        # CAUTION: Scanpy returns (cells, genes).
-        # We need (chunk_cells, genes).
-        
-        # mu_matrix = (tis_chunk[:, None] * tjs_gpu[None, :]) / total_gpu
-        # This creates (chunk, ng) matrix.
+        tis_chunk = tis_gpu_full[i:end]
         
         try:
             # 1. Calculate Mean Matrix (Mu)
+            # mu = tjs * tis / total
+            # Outer product: (chunk_cells,) x (genes,) -> (chunk_cells, genes)
             mu_chunk = cp.outer(tis_chunk, tjs_gpu) 
             mu_chunk /= total_gpu
             
@@ -381,14 +365,10 @@ def NBumiCompareModelsGPU(
     size_factors[positive_mask] = cell_sums[positive_mask] / median_sum
     
     # Create Output H5AD structure
-    # We use h5py to write incrementally while processing on GPU
-    # (Writing sparse matrices incrementally is tricky, we write CSR components)
-    
     if chunk_size is None:
         chunk_size = calculate_optimal_chunk_size(ng, dtype_size=4, memory_multiplier=4.0)
 
     # Initialize output file
-    # For simplicity in this reconstruction, we write a standard Anndata but populate X manually
     adata_out = sc.AnnData(obs=adata.obs, var=adata.var)
     adata_out.write_h5ad(basic_norm_filename, compression="gzip")
     
@@ -414,12 +394,12 @@ def NBumiCompareModelsGPU(
             chunk_gpu = cp.asarray(chunk if not isinstance(chunk, pd.DataFrame) else chunk.values, dtype=cp.float32)
             
             if csp.issparse(chunk_gpu):
-                chunk_gpu = chunk_gpu.toarray() # Dense needed for division usually, or keep sparse if factors allow
+                chunk_gpu = chunk_gpu.toarray() 
             
             # Normalize
             factors_chunk = cp.asarray(size_factors[i:end], dtype=cp.float32)
             chunk_gpu = chunk_gpu / factors_chunk[:, None]
-            chunk_gpu = cp.round(chunk_gpu) # Rounding as per CPU logic
+            chunk_gpu = cp.round(chunk_gpu) 
             
             # Convert back to sparse CSR on GPU
             chunk_csr = csp.csr_matrix(chunk_gpu)
@@ -516,9 +496,6 @@ def NBumiCompareModelsGPU(
         "comparison_df": comparison_df
     }
 
-if __name__ == "__main__":
-    print("NBumi GPU Diagnostics Module Loaded.")
-
 def NBumiPlotDispVsMeanGPU(
     fit: dict,
     suppress_plot: bool = False,
@@ -530,39 +507,33 @@ def NBumiPlotDispVsMeanGPU(
     """
     print("FUNCTION: NBumiPlotDispVsMeanGPU()")
 
-    # Extract stats from the fit dictionary
     stats = fit['vals']
     nc = stats['nc']
     
-    # 1. Get Observed Data (Move to CPU for plotting)
-    # We use the CPU-side Series if available in 'vals', otherwise we might need to recalculate.
-    # The 'fit' object from my previous code returns pandas Series in 'vals', so this is safe.
+    # 1. Get Observed Data
     mean_expression = stats['tjs'].values / nc
     sizes = fit['sizes'].values
 
     # 2. Get Fitted Regression Line
-    # Use the internal helper I wrote in diagnosticsGPU to get the slope/intercept
     coeffs = NBumiFitDispVsMean_Internal(fit)
     intercept, slope = coeffs[0], coeffs[1]
 
-    # 3. Handle plotting range (Filter positives)
+    # 3. Handle plotting range
     positive_means = mean_expression[mean_expression > 0]
     if positive_means.size == 0:
         print("WARNING: No positive mean expression values. Skipping plot.")
         return
 
-    # Generate X-axis points for the regression line
     log_mean_expr_range = np.linspace(
         np.log(positive_means.min()),
         np.log(positive_means.max()),
         100
     )
     
-    # Calculate Y-axis (Fitted Sizes)
     log_fitted_sizes = intercept + slope * log_mean_expr_range
     fitted_sizes = np.exp(log_fitted_sizes)
 
-    # 4. Plotting (Standard Matplotlib)
+    # 4. Plotting
     plt.figure(figsize=(8, 6))
     plt.scatter(mean_expression, sizes, label='Observed Dispersion', alpha=0.5, s=8)
     plt.plot(np.exp(log_mean_expr_range), fitted_sizes, color='red', label='Regression Fit', linewidth=2)
@@ -584,3 +555,6 @@ def NBumiPlotDispVsMeanGPU(
 
     plt.close()
     print("FUNCTION: NBumiPlotDispVsMeanGPU() COMPLETE\n")
+
+if __name__ == "__main__":
+    print("NBumi GPU Diagnostics Module Loaded.")
