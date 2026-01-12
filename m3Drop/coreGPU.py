@@ -19,7 +19,6 @@ try:
     import cupy.sparse as csp
     from cupy.sparse import csr_matrix as cp_csr_matrix
     HAS_GPU = True
-    # Pin memory for faster CPU->GPU transfer if needed, though high-level API handles this mostly.
 except ImportError:
     cupy = None
     HAS_GPU = False
@@ -60,9 +59,6 @@ def get_compute_tile_size(n_genes: int, vram_limit_gb: float = 9.0) -> int:
     """
     Calculates the max 'Micro-Batch' size for dense GPU operations 
     given the VRAM constraints (default 9GB safe limit for 10GB slice).
-    
-    Math: We need roughly 3 dense matrices of shape (tile, genes) in float64.
-    Size = 3 * tile * genes * 8 bytes.
     """
     bytes_per_element = 8 # float64
     matrices_needed = 3   # mu, p_is, p_var (approx)
@@ -74,6 +70,18 @@ def get_compute_tile_size(n_genes: int, vram_limit_gb: float = 9.0) -> int:
     
     # Safety margin: Cap at 20k to prevent timeouts/watchdogs
     return max(100, min(tile_size, 20000))
+
+# --- LEGACY ALIAS FOR BACKWARD COMPATIBILITY ---
+# This prevents ImportError in __init__.py
+def get_optimal_chunk_size(*args, **kwargs):
+    """
+    Legacy stub to satisfy imports from older __init__.py files.
+    Redirects to the new safe I/O chunk sizer.
+    """
+    # If the first arg looks like a filename, use it. Otherwise default.
+    if args and isinstance(args[0], str):
+        return get_io_chunk_size(args[0])
+    return 5000
 
 # --- CORE FUNCTIONS ---
 
@@ -136,7 +144,6 @@ def ConvertDataSparseGPU(input_filename: str, output_filename: str):
         print(f"\nPhase [1/2]: COMPLETE | Retained {n_genes_to_keep} / {n_genes} genes.")
 
         # 2. WRITE IO: Large chunks to prevent Lustre stalls
-        # Using same chunk size as read is usually safe for sparse-to-sparse write
         write_chunk_size = read_chunk_size 
         
         print(f"Phase [2/2]: Filtering & Saving (Write Chunk: {write_chunk_size})...")
@@ -172,15 +179,11 @@ def ConvertDataSparseGPU(input_filename: str, output_filename: str):
                 indices_slice = h5_indices[start_idx:end_idx]
                 indptr_slice = h5_indptr[i:end_row+1] - h5_indptr[i]
 
-                # Construct Sparse Matrix (CPU RAM is cheap, do construction here)
+                # Construct Sparse Matrix
                 chunk = sp_csr_matrix((data_slice, indices_slice, indptr_slice), shape=(end_row-i, n_genes))
-                
-                # Filter Columns
                 filtered_chunk = chunk[:, genes_to_keep_mask_cpu]
                 
-                # "Ceil" operation (Rounding up)
-                # Note: Doing this on CPU is likely fine as it's O(NNZ), but could be GPU'd. 
-                # Given I/O is bottleneck, CPU is safer for stability.
+                # "Ceil" operation
                 filtered_chunk.data = np.ceil(filtered_chunk.data).astype('float32')
 
                 # Append to H5
@@ -210,8 +213,6 @@ def hidden_calc_valsGPU(filename: str) -> dict:
     start_time = time.perf_counter()
     print(f"FUNCTION: hidden_calc_vals() | FILE: {filename}")
 
-    # Chunking: Aggressive. Sparse matrices take very little VRAM.
-    # 500MB sparse data can represent millions of cells.
     chunk_size = get_io_chunk_size(filename, target_mb=1024) 
 
     adata_meta = anndata.read_h5ad(filename, backed='r')
@@ -245,24 +246,18 @@ def hidden_calc_valsGPU(filename: str) -> dict:
             # Construct Cupy CSR
             chunk_gpu = cp_csr_matrix((data_gpu, indices_gpu, indptr_gpu), shape=(end_row-i, ng))
 
-            # Row sums (tis) - retrieve immediately
+            # Row sums (tis)
             tis[i:end_row] = chunk_gpu.sum(axis=1).get().flatten()
-            
-            # Row NNZ
             cell_non_zeros[i:end_row] = cupy.diff(indptr_gpu).get()
 
-            # Column Accumulation (tjs) - keep on GPU
-            # sum(axis=0) returns a matrix, convert to 1D array
-            current_sum = chunk_gpu.sum(axis=0)
-            tjs_gpu += current_sum.ravel() # Flatten to 1D
+            # Column Accumulation (tjs)
+            tjs_gpu += chunk_gpu.sum(axis=0).ravel()
             
             # Column NNZ
-            # Trick: Convert data to 1s, then sum axis 0
             chunk_gpu.data[:] = 1
             gene_non_zeros_gpu += chunk_gpu.sum(axis=0).ravel()
             
             del data_gpu, indices_gpu, indptr_gpu, chunk_gpu
-            # No aggressive free needed here, standard GC is usually fine for sparse
 
     tjs = cupy.asnumpy(tjs_gpu)
     gene_non_zeros = cupy.asnumpy(gene_non_zeros_gpu)
@@ -291,7 +286,6 @@ def NBumiFitModelGPU(cleaned_filename: str, stats: dict) -> dict:
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiFitModel() | FILE: {cleaned_filename}")
     
-    # Sparse ops are memory efficient. Use large chunks.
     chunk_size = get_io_chunk_size(cleaned_filename, target_mb=1024)
     
     tjs = stats['tjs'].values
@@ -322,38 +316,27 @@ def NBumiFitModelGPU(cleaned_filename: str, stats: dict) -> dict:
             start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
             if start_idx == end_idx: continue
             
-            # Sparse GPU Load
             data_gpu = cupy.asarray(h5_data[start_idx:end_idx], dtype=cupy.float64)
             indices_gpu = cupy.asarray(h5_indices[start_idx:end_idx])
             indptr_gpu = cupy.asarray(h5_indptr[i:end_row+1] - h5_indptr[i])
             
-            # 1. Sum X^2 (Element-wise square of sparse data)
+            # 1. Sum X^2
             cupy.add.at(sum_x_sq_gpu, indices_gpu, data_gpu**2)
             
             # 2. Sum 2*X*mu
-            # Need to map row_idx to every data point to get tis[row]
-            # Efficient method: expand row indices
             nnz_in_chunk = indptr_gpu[-1].item()
-            
-            # Create row_indices vector (e.g. [0,0,0, 1,1, 2...])
-            # Kernel-based expansion or diff trick
-            # This consumes VRAM proportional to NNZ (safe)
             row_boundaries = cupy.zeros(nnz_in_chunk, dtype=cupy.int32)
             if len(indptr_gpu) > 1:
                 row_boundaries[indptr_gpu[:-1]] = 1
-            # Global row index = offset i + local index
             row_indices_gpu = (cupy.cumsum(row_boundaries, axis=0) - 1) + i
             
             tis_per_nz = tis_gpu[row_indices_gpu]
             tjs_per_nz = tjs_gpu[indices_gpu]
             
-            # term = 2 * X * (tis*tjs/total)
             term_vals = 2 * data_gpu * tjs_per_nz * tis_per_nz / total
             cupy.add.at(sum_2xmu_gpu, indices_gpu, term_vals)
             
-            # Cleanup
             del data_gpu, indices_gpu, indptr_gpu, row_indices_gpu, tis_per_nz, tjs_per_nz, term_vals
-            # Periodic GC
             if i % (chunk_size * 2) == 0:
                 cupy.get_default_memory_pool().free_all_blocks()
     
@@ -408,20 +391,17 @@ def NBumiFitDispVsMeanGPU(fit, suppress_plot=True):
     return model.params
 
 def NBumiFeatureSelectionHighVarGPU(fit: dict) -> pd.DataFrame:
-    # This is fast enough on CPU usually, but can use GPU for residuals
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiFeatureSelectionHighVar()")
 
     vals = fit['vals']
     coeffs = NBumiFitDispVsMeanGPU(fit, suppress_plot=True)
     
-    # Use GPU for vector math
     mean_expression = cupy.asarray(vals['tjs'].values / vals['nc'])
     sizes = cupy.asarray(fit['sizes'].values)
     coeffs_gpu = cupy.asarray(coeffs)
     
     log_mean_expression = cupy.log(mean_expression)
-    # Handle neginf
     log_mean_expression[cupy.isinf(log_mean_expression)] = 0
     
     exp_size = cupy.exp(coeffs_gpu[0] + coeffs_gpu[1] * log_mean_expression)
@@ -440,17 +420,14 @@ def NBumiFeatureSelectionHighVarGPU(fit: dict) -> pd.DataFrame:
 def NBumiFeatureSelectionCombinedDropGPU(fit: dict, cleaned_filename: str, method="fdr_bh", qval_thresh=0.05) -> pd.DataFrame:
     """
     TILED IMPLEMENTATION.
-    Crucial fix for 10GB VRAM Limit.
-    1. Reads BIG chunks from disk (to save I/O).
-    2. Processes SMALL dense tiles on GPU (to save VRAM).
     """
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiFeatureSelectionCombinedDrop() | FILE: {cleaned_filename}")
 
-    # 1. READ CONFIG: Read 100k rows (efficient I/O)
+    # 1. READ CONFIG
     io_chunk_size = get_io_chunk_size(cleaned_filename, target_mb=512)
     
-    # 2. COMPUTE CONFIG: Process ~5k-10k rows (efficient VRAM)
+    # 2. COMPUTE CONFIG
     vals = fit['vals']
     compute_tile_size = get_compute_tile_size(n_genes=vals['ng'], vram_limit_gb=9.0)
     
@@ -464,52 +441,32 @@ def NBumiFeatureSelectionCombinedDropGPU(fit: dict, cleaned_filename: str, metho
     nc = vals['nc']
     ng = vals['ng']
 
-    # Pre-calc expected size vector
     mean_expression_gpu = tjs_gpu / nc
     exp_size_gpu = cupy.exp(cupy.asarray(coeffs[0]) + cupy.asarray(coeffs[1]) * cupy.log(mean_expression_gpu))
     
-    # Global Accumulators
     p_sum_gpu = cupy.zeros(ng, dtype=cupy.float64)
     p_var_sum_gpu = cupy.zeros(ng, dtype=cupy.float64)
 
-    # LOOP 1: DISK I/O
+    # LOOP 1: DISK I/O (Virtual)
     for i in range(0, nc, io_chunk_size):
         end_col = min(i + io_chunk_size, nc)
         print(f"  > I/O Block {i} - {end_col}...", end='\r')
-        
-        # We don't actually need to read the data file for this step!
-        # The formula depends ONLY on `tis` (which we have in RAM) and `tjs` (in RAM).
-        # We are calculating EXPECTED dropout based on MARGINALS.
-        # This is a massive optimization: No H5 reads required here.
-        
-        # We just iterate the `tis` array.
         
         # LOOP 2: GPU TILES
         for j in range(i, end_col, compute_tile_size):
             tile_end = min(j + compute_tile_size, end_col)
             
-            # Sliced TIS
-            tis_tile_gpu = tis_gpu[j:tile_end] # (tile_size,)
+            tis_tile_gpu = tis_gpu[j:tile_end] 
             
-            # --- DENSE MATH (Broadcasting) ---
             # mu = tjs * tis / total
-            # shape: (genes, 1) * (1, tile) -> (genes, tile) -> Transpose to (tile, genes)
-            # Or (tile, 1) * (1, genes) -> (tile, genes)
-            
-            # Memory efficient: (tile, 1) * (1, genes)
             mu_chunk_gpu = (tis_tile_gpu[:, cupy.newaxis] * tjs_gpu[cupy.newaxis, :]) / total
             
             # p = (1 + mu / alpha)^-alpha
-            # broadcasting alpha (1, genes)
             p_is_chunk_gpu = cupy.power(1.0 + mu_chunk_gpu / exp_size_gpu[cupy.newaxis, :], -exp_size_gpu[cupy.newaxis, :])
             
-            # Accumulate
             p_sum_gpu += p_is_chunk_gpu.sum(axis=0)
-            
-            # Variance
             p_var_sum_gpu += (p_is_chunk_gpu * (1.0 - p_is_chunk_gpu)).sum(axis=0)
             
-            # Free VRAM
             del mu_chunk_gpu, p_is_chunk_gpu, tis_tile_gpu
             cupy.get_default_memory_pool().free_all_blocks()
             
@@ -540,7 +497,6 @@ def NBumiFeatureSelectionCombinedDropGPU(fit: dict, cleaned_filename: str, metho
     return final_table[['Gene', 'effect_size', 'p.value', 'q.value']]
 
 def NBumiCombinedDropVolcanoGPU(results_df, qval_thresh=0.05, effect_size_thresh=0.25, top_n_genes=10, suppress_plot=False, plot_filename=None):
-    # Visualization is CPU bound and fast, no changes needed
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiCombinedDropVolcano()")
 
