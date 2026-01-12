@@ -507,8 +507,15 @@ def NBumiFeatureSelectionCombinedDropGPU(fit: dict, cleaned_filename: str, metho
         mu_chunk_gpu = tjs_gpu[:, cupy.newaxis] * tis_chunk_gpu[cupy.newaxis, :] / total
         
         # Calculate p_is and p_var in steps to allow memory recycling if possible
-        p_is_chunk_gpu = cupy.power(1 + mu_chunk_gpu / exp_size_gpu[:, cupy.newaxis], -exp_size_gpu[:, cupy.newaxis])
         
+        # [PATCH START] Restored safety clamping from CPU version to prevent NaN/Inf crashes
+        base = 1 + mu_chunk_gpu / exp_size_gpu[:, cupy.newaxis]
+        base = cupy.maximum(base, 1e-12) 
+        
+        p_is_chunk_gpu = cupy.power(base, -exp_size_gpu[:, cupy.newaxis])
+        p_is_chunk_gpu = cupy.nan_to_num(p_is_chunk_gpu, nan=0.0, posinf=1.0, neginf=0.0)
+        # [PATCH END]
+
         p_sum_gpu += p_is_chunk_gpu.sum(axis=1)
         
         # Calculate Variance
