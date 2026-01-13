@@ -19,14 +19,15 @@ def NBumiPearsonResidualsGPU(
     output_filename: str
 ):
     """
-    Calculates Pearson residuals. Safe Mode: Multiplier increased to 6.0.
+    Calculates Pearson residuals. Safe Mode: Multiplier increased to 10.0.
     """
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiPearsonResiduals() | FILE: {cleaned_filename}")
 
     # --- SAFETY UPDATE ---
-    # Multiplier 6.0 (Was 4.0): Forces smaller chunks to avoid fragmentation crashes.
-    chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=6.0, is_dense=True)
+    # Multiplier 10.0 (Was 6.0): Accounts for Float64 precision (8 bytes) vs Governor default (4 bytes).
+    # 4 matrices * 8 bytes = 32 bytes/cell. Governor 10 * 4 = 40 bytes. Safe buffer established.
+    chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=10.0, is_dense=True)
 
     # --- Phase 1: Initialization ---
     print("Phase [1/2]: Initializing parameters and preparing output file...")
@@ -98,7 +99,8 @@ def NBumiPearsonResidualsGPU(
                 pearson_chunk_gpu = (counts_chunk_dense_gpu - mus_chunk_gpu) / denominator_gpu
                 
                 # Write to Disk
-                out_x[i:end_row, :] = pearson_chunk_gpu.get()
+                # [OPTIMIZATION] Cast to float32 on GPU to halve PCIe transfer time
+                out_x[i:end_row, :] = pearson_chunk_gpu.astype(cupy.float32).get()
                 
                 # Cleanup
                 del counts_chunk_dense_gpu, counts_chunk_sparse_gpu, mus_chunk_gpu, pearson_chunk_gpu, denominator_gpu
@@ -126,8 +128,8 @@ def NBumiPearsonResidualsApproxGPU(
     print(f"FUNCTION: NBumiPearsonResidualsApprox() | FILE: {cleaned_filename}")
 
     # --- HANDSHAKE ---
-    # Multiplier 6.0: Same safety logic as Full residuals.
-    chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=6.0, is_dense=True)
+    # Multiplier 10.0: Same safety logic as Full residuals.
+    chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=10.0, is_dense=True)
 
     # --- Phase 1: Initialization ---
     print("Phase [1/2]: Initializing parameters and preparing output file...")
@@ -191,7 +193,8 @@ def NBumiPearsonResidualsApproxGPU(
                 
                 pearson_chunk_gpu = (counts_chunk_dense_gpu - mus_chunk_gpu) / denominator_gpu
                 
-                out_x[i:end_row, :] = pearson_chunk_gpu.get()
+                # [OPTIMIZATION] Cast to float32 on GPU to halve PCIe transfer time
+                out_x[i:end_row, :] = pearson_chunk_gpu.astype(cupy.float32).get()
                 
                 del counts_chunk_dense_gpu, counts_chunk_sparse_gpu, mus_chunk_gpu, pearson_chunk_gpu, denominator_gpu
                 cupy.get_default_memory_pool().free_all_blocks()
