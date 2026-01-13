@@ -12,49 +12,8 @@ from scipy import sparse
 from scipy import stats
 
 # --- RESTORED IMPORT FROM CORE ---
-from .coreGPU import NBumiFitDispVsMeanGPU
-
-# ==============================================================================
-# GPU MEMORY GOVERNOR & OPTIMIZER
-# ==============================================================================
-
-def get_slurm_memory_limit():
-    """Detects SLURM memory limits or defaults to system RAM."""
-    mem_per_cpu = os.environ.get("SLURM_MEM_PER_CPU")
-    if mem_per_cpu:
-        return int(mem_per_cpu) * 1024 * 1024
-    
-    mem_per_node = os.environ.get("SLURM_MEM_PER_NODE")
-    if mem_per_node:
-        return int(mem_per_node) * 1024 * 1024
-        
-    return psutil.virtual_memory().total
-
-def calculate_optimal_chunk_size(n_vars, dtype_size=4, memory_multiplier=3.0, override_cap=None):
-    """Calculates safe chunk size based on available VRAM and RAM."""
-    try:
-        gpu_mem_info = cp.cuda.runtime.memGetInfo()
-        free_vram = gpu_mem_info[0]
-    except Exception:
-        print("WARNING: No GPU detected or CuPy error. Defaulting to safe small chunk.")
-        return 5000
-
-    available_ram = get_slurm_memory_limit() * 0.8
-    
-    # Cost calculation
-    row_cost_vram = n_vars * dtype_size * memory_multiplier
-    row_cost_ram = n_vars * dtype_size * 2.0
-    
-    max_rows_vram = int(free_vram / row_cost_vram)
-    max_rows_ram = int(available_ram / row_cost_ram)
-    
-    optimal_chunk = min(max_rows_vram, max_rows_ram)
-    
-    if override_cap:
-        optimal_chunk = min(optimal_chunk, override_cap)
-        
-    print(f"DEBUG: Chunk Optimizer -> VRAM Free: {free_vram/1e9:.2f}GB | Chunk Size: {optimal_chunk}")
-    return max(1, optimal_chunk)
+# [FIX 1] Imported the Governor (get_optimal_chunk_size)
+from .coreGPU import NBumiFitDispVsMeanGPU, get_optimal_chunk_size
 
 # ==============================================================================
 # HELPER FUNCTIONS 
@@ -129,7 +88,10 @@ def get_basic_stats(adata_path, chunk_size=10000):
             # Cleanup
             del chunk_gpu, is_zero
             if is_sparse: del chunk_csr, d_chunk, i_chunk, ptr_chunk
+            
+            # [FIX 2] Force GC to prevent delayed OOM in tight loops
             cp.get_default_memory_pool().free_all_blocks()
+            gc.collect()
 
         # 5. Reconstruct Indices (Lightweight)
         try:
@@ -179,8 +141,9 @@ def NBumiFitBasicModelGPU(
     nc, ng = stats['nc'], stats['ng']
     tjs = cp.asarray(stats['tjs'].values, dtype=cp.float64)
     
+    # [FIX 3] Use the core Governor instead of local guess
     if chunk_size is None:
-        chunk_size = calculate_optimal_chunk_size(ng, dtype_size=4, memory_multiplier=3.0)
+        chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=3.0, is_dense=False)
 
     # 1. Calculate Sum of Squares (Variance)
     sum_x_sq = cp.zeros(ng, dtype=cp.float64)
@@ -220,6 +183,7 @@ def NBumiFitBasicModelGPU(
             del chunk_gpu
             if is_sparse: del chunk_csr
             cp.get_default_memory_pool().free_all_blocks()
+            gc.collect() # [FIX 2]
         
     print(f"\nPhase [1/2]: COMPLETE")
 
@@ -267,7 +231,6 @@ def NBumiCheckFitFSGPU(
     print(f"FUNCTION: NBumiCheckFitFSGPU() | FILE: {cleaned_filename}")
 
     # 1. Get Smoothed Size Parameters (Regression)
-    # RESTORED: Calling the coreGPU function
     coeffs = NBumiFitDispVsMeanGPU(fit, suppress_plot=True)
     intercept, slope = coeffs[0], coeffs[1]
     
@@ -291,8 +254,9 @@ def NBumiCheckFitFSGPU(
     row_ps = cp.zeros(ng, dtype=cp.float64)
     col_ps = cp.zeros(nc, dtype=cp.float64)
     
+    # [FIX 3] Use the core Governor
     if chunk_size is None:
-        chunk_size = calculate_optimal_chunk_size(ng, dtype_size=4, memory_multiplier=5.0)
+        chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=5.0, is_dense=False)
 
     print("Phase [2/2]: Calculating expected dropouts (GPU)...")
     for i in range(0, nc, chunk_size):
@@ -319,9 +283,10 @@ def NBumiCheckFitFSGPU(
             
             del mu_chunk, base, p_is_chunk
             cp.get_default_memory_pool().free_all_blocks()
+            gc.collect() # [FIX 2]
             
         except cp.cuda.memory.OutOfMemoryError:
-            print(f"\nOOM in Chunk {i}. Try reducing chunk_size further.")
+            print(f"\nOOM in Chunk {i}. Governor failed, manual intervention needed.")
             raise
 
     print(f"\nPhase [2/2]: COMPLETE{' '*20}")
@@ -395,10 +360,6 @@ def NBumiCompareModelsGPU(
     # Manual Metadata Read (Lightweight)
     with h5py.File(cleaned_filename, 'r') as f_in:
         nc, ng = f_in['X'].attrs['shape'] if 'shape' in f_in['X'].attrs else f_in['X'].shape
-        # Copy Obs/Var to new file logic is tricky without AnnData.
-        # To avoid OOM, we will ONLY write X to the temp file and use indices from stats.
-        # This is a deviation from CPU structure but necessary for RAM safety.
-        # However, to keep it compatible with get_basic_stats, we just need a valid X.
     
     cell_sums = stats['tis'].values.astype(np.float64)
     positive_mask = cell_sums > 0
@@ -406,8 +367,9 @@ def NBumiCompareModelsGPU(
     size_factors = np.ones_like(cell_sums, dtype=np.float32)
     size_factors[positive_mask] = cell_sums[positive_mask] / median_sum
     
+    # [FIX 3] Use the core Governor
     if chunk_size is None:
-        chunk_size = calculate_optimal_chunk_size(ng, dtype_size=4, memory_multiplier=4.0)
+        chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=4.0, is_dense=False)
 
     # Create Output H5 (Raw h5py, no AnnData overhead)
     with h5py.File(basic_norm_filename, 'w') as f_out:
@@ -474,13 +436,14 @@ def NBumiCompareModelsGPU(
                 
                 del chunk_gpu, chunk_csr
                 cp.get_default_memory_pool().free_all_blocks()
+                gc.collect() # [FIX 2]
 
     print(f"\nPhase [1/4]: COMPLETE{' '*20}")
     gc.collect()
 
     # --- Phase 2: Fit Basic Model ---
     print("Phase [2/4]: Fitting Basic Model on normalized data...")
-    # NOTE: Both functions now use h5py streaming. No sc.read_h5ad calls.
+    # [FIX 3] Pass the unified chunk_size to sub-routines
     stats_basic = get_basic_stats(basic_norm_filename, chunk_size=chunk_size)
     fit_basic = NBumiFitBasicModelGPU(basic_norm_filename, stats_basic, chunk_size=chunk_size)
     print("Phase [2/4]: COMPLETE")
@@ -557,7 +520,6 @@ def NBumiPlotDispVsMeanGPU(
     mean_expression = stats['tjs'].values / nc
     sizes = fit['sizes'].values
 
-    # RESTORED: Calling the coreGPU function
     coeffs = NBumiFitDispVsMeanGPU(fit, suppress_plot=True)
     intercept, slope = coeffs[0], coeffs[1]
 
