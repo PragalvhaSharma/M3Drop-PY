@@ -95,9 +95,9 @@ def get_optimal_chunk_size(filename: str, multiplier: float, is_dense: bool = Fa
         # Goal: Throughput. Ignore CPU Cache.
         optimal = min(limit_ram, limit_vram)
         
-        # ANTI-STALL FLOOR: Force 5,000 rows minimum to overcome latency
-        # (Unless the calculated limit is dangerously low, then respect safety)
-        if optimal < 5000 and optimal > 100: optimal = 5000
+        # ANTI-STALL FLOOR: Force 3,000 rows minimum to overcome latency
+        # (Lowered to 3,000 to prevent OOM on massive dense files)
+        if optimal < 3000 and optimal > 100: optimal = 3000
         
         mode_msg = "CLUSTER (SLURM Detected)"
         
