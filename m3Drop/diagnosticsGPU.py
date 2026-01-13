@@ -25,7 +25,8 @@ def get_basic_stats(adata_path, chunk_size=10000):
     """
     print(f"DEBUG: calculating stats for {adata_path} (Stream Mode)")
     
-    with h5py.File(adata_path, 'r') as f:
+    # [OPTION 3] Disable Chunk Cache (rdcc_nbytes=0) to prevent RAM fragmentation
+    with h5py.File(adata_path, 'r', rdcc_nbytes=0) as f:
         # 1. Determine dimensions from HDF5 attributes
         if 'X' not in f:
              raise KeyError(f"File {adata_path} has no 'X' group/dataset.")
@@ -57,7 +58,7 @@ def get_basic_stats(adata_path, chunk_size=10000):
         # 3. Stream Data
         for i in range(0, nc, chunk_size):
             end = min(i + chunk_size, nc)
-            # [ADDED DEBUG] Track progress per chunk
+            # Track progress per chunk
             if i % (chunk_size * 5) == 0:
                 print(f"DEBUG: Processing chunk {i} / {nc}...", end='\r')
             
@@ -152,8 +153,8 @@ def NBumiFitBasicModelGPU(
     
     print("Phase [1/2]: Calculating variance from data chunks (GPU Stream)...")
     
-    # Use h5py instead of sc.read_h5ad to save RAM
-    with h5py.File(cleaned_filename, 'r') as f:
+    # [OPTION 3] Disable Chunk Cache
+    with h5py.File(cleaned_filename, 'r', rdcc_nbytes=0) as f:
         x_obj = f['X']
         if isinstance(x_obj, h5py.Group):
             is_sparse = True
@@ -359,7 +360,8 @@ def NBumiCompareModelsGPU(
     if os.path.exists(basic_norm_filename):
         os.remove(basic_norm_filename)
 
-    with h5py.File(cleaned_filename, 'r') as f_in:
+    # [OPTION 3] Disable Cache on metadata read
+    with h5py.File(cleaned_filename, 'r', rdcc_nbytes=0) as f_in:
         nc, ng = f_in['X'].attrs['shape'] if 'shape' in f_in['X'].attrs else f_in['X'].shape
     
     cell_sums = stats['tis'].values.astype(np.float64)
@@ -385,8 +387,8 @@ def NBumiCompareModelsGPU(
         
         current_nnz = 0
         
-        # Open Input Streaming
-        with h5py.File(cleaned_filename, 'r') as f_in:
+        # Open Input Streaming with CACHE DISABLED
+        with h5py.File(cleaned_filename, 'r', rdcc_nbytes=0) as f_in:
             x_in = f_in['X']
             is_sparse = isinstance(x_in, h5py.Group)
             
