@@ -57,6 +57,9 @@ def get_basic_stats(adata_path, chunk_size=10000):
         # 3. Stream Data
         for i in range(0, nc, chunk_size):
             end = min(i + chunk_size, nc)
+            # [ADDED DEBUG] Track progress per chunk
+            if i % (chunk_size * 5) == 0:
+                print(f"DEBUG: Processing chunk {i} / {nc}...", end='\r')
             
             if is_sparse:
                 # Manual CSR Slicing from disk
@@ -365,9 +368,9 @@ def NBumiCompareModelsGPU(
     size_factors = np.ones_like(cell_sums, dtype=np.float32)
     size_factors[positive_mask] = cell_sums[positive_mask] / median_sum
     
-    # [FIX: is_dense=True] Code performs densification (.toarray())
+    # [FIX: multiplier=10.0] Throttle down to avoid CPU OOM
     if chunk_size is None:
-        chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=4.0, is_dense=True)
+        chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=10.0, is_dense=True)
 
     # Create Output H5 (Raw h5py, no AnnData overhead)
     with h5py.File(basic_norm_filename, 'w') as f_out:
@@ -442,8 +445,8 @@ def NBumiCompareModelsGPU(
     # --- Phase 2: Fit Basic Model ---
     print("Phase [2/4]: Fitting Basic Model on normalized data...")
     
-    # [FIX: is_dense=True]
-    chunk_size_basic = get_optimal_chunk_size(basic_norm_filename, multiplier=4.0, is_dense=True)
+    # [FIX: multiplier=10.0] Throttle down to avoid CPU OOM
+    chunk_size_basic = get_optimal_chunk_size(basic_norm_filename, multiplier=10.0, is_dense=True)
     print(f"DEBUG: Re-calculated chunk size for heavy file: {chunk_size_basic}")
 
     stats_basic = get_basic_stats(basic_norm_filename, chunk_size=chunk_size_basic)
