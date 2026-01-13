@@ -12,7 +12,7 @@ from scipy import sparse
 from scipy import stats
 
 # --- RESTORED IMPORT FROM CORE ---
-# [FIX 1] Imported the Governor (get_optimal_chunk_size)
+# Imported the Governor (get_optimal_chunk_size)
 from .coreGPU import NBumiFitDispVsMeanGPU, get_optimal_chunk_size
 
 # ==============================================================================
@@ -89,7 +89,7 @@ def get_basic_stats(adata_path, chunk_size=10000):
             del chunk_gpu, is_zero
             if is_sparse: del chunk_csr, d_chunk, i_chunk, ptr_chunk
             
-            # [FIX 2] Force GC to prevent delayed OOM in tight loops
+            # Force GC to prevent delayed OOM in tight loops
             cp.get_default_memory_pool().free_all_blocks()
             gc.collect()
 
@@ -141,7 +141,7 @@ def NBumiFitBasicModelGPU(
     nc, ng = stats['nc'], stats['ng']
     tjs = cp.asarray(stats['tjs'].values, dtype=cp.float64)
     
-    # [FIX 3] Use the core Governor instead of local guess
+    # Use the core Governor instead of local guess
     if chunk_size is None:
         chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=3.0, is_dense=False)
 
@@ -183,7 +183,7 @@ def NBumiFitBasicModelGPU(
             del chunk_gpu
             if is_sparse: del chunk_csr
             cp.get_default_memory_pool().free_all_blocks()
-            gc.collect() # [FIX 2]
+            gc.collect()
         
     print(f"\nPhase [1/2]: COMPLETE")
 
@@ -254,7 +254,7 @@ def NBumiCheckFitFSGPU(
     row_ps = cp.zeros(ng, dtype=cp.float64)
     col_ps = cp.zeros(nc, dtype=cp.float64)
     
-    # [FIX 3] Use the core Governor
+    # Use the core Governor
     if chunk_size is None:
         chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=5.0, is_dense=False)
 
@@ -283,7 +283,7 @@ def NBumiCheckFitFSGPU(
             
             del mu_chunk, base, p_is_chunk
             cp.get_default_memory_pool().free_all_blocks()
-            gc.collect() # [FIX 2]
+            gc.collect()
             
         except cp.cuda.memory.OutOfMemoryError:
             print(f"\nOOM in Chunk {i}. Governor failed, manual intervention needed.")
@@ -366,11 +366,11 @@ def NBumiCompareModelsGPU(
     size_factors = np.ones_like(cell_sums, dtype=np.float32)
     size_factors[positive_mask] = cell_sums[positive_mask] / median_sum
     
-    # Governor Check 1: Optimize for the INPUT file (Sparse/Light)
+    # Use the core Governor
     if chunk_size is None:
         chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=4.0, is_dense=False)
 
-    # Create Output H5
+    # Create Output H5 (Raw h5py, no AnnData overhead)
     with h5py.File(basic_norm_filename, 'w') as f_out:
         x_grp = f_out.create_group('X')
         x_grp.attrs['encoding-type'] = 'csr_matrix'
@@ -383,6 +383,7 @@ def NBumiCompareModelsGPU(
         
         current_nnz = 0
         
+        # Open Input Streaming
         with h5py.File(cleaned_filename, 'r') as f_in:
             x_in = f_in['X']
             is_sparse = isinstance(x_in, h5py.Group)
@@ -409,10 +410,12 @@ def NBumiCompareModelsGPU(
                     chunk = x_in[i:end]
                     chunk_gpu = cp.asarray(chunk, dtype=cp.float32)
                 
+                # Normalize
                 factors_chunk = cp.asarray(size_factors[i:end], dtype=cp.float32)
                 chunk_gpu = chunk_gpu / factors_chunk[:, None]
                 chunk_gpu = cp.round(chunk_gpu) 
                 
+                # Convert back to sparse CSR on GPU
                 chunk_csr = csp.csr_matrix(chunk_gpu)
                 
                 data_cpu = cp.asnumpy(chunk_csr.data)
@@ -440,10 +443,11 @@ def NBumiCompareModelsGPU(
     # --- Phase 2: Fit Basic Model ---
     print("Phase [2/4]: Fitting Basic Model on normalized data...")
     
-    # [CRITICAL FIX] RECALCULATE chunk size for the new 121GB file!
-    # The heavy file requires a much smaller chunk (likely ~2,000)
+    # [CRITICAL UPDATE] RECALCULATE chunk size for the heavy 121GB file!
+    # The Governor will see the huge file size and scale down the chunk size automatically.
     chunk_size_basic = get_optimal_chunk_size(basic_norm_filename, multiplier=4.0, is_dense=False)
-    
+    print(f"DEBUG: Re-calculated chunk size for heavy file: {chunk_size_basic}")
+
     stats_basic = get_basic_stats(basic_norm_filename, chunk_size=chunk_size_basic)
     fit_basic = NBumiFitBasicModelGPU(basic_norm_filename, stats_basic, chunk_size=chunk_size_basic)
     print("Phase [2/4]: COMPLETE")
@@ -503,7 +507,7 @@ def NBumiCompareModelsGPU(
         "errors": {"Depth-Adjusted": err_adj, "Basic": err_bas},
         "comparison_df": comparison_df
     }
-    
+
 def NBumiPlotDispVsMeanGPU(
     fit: dict,
     suppress_plot: bool = False,
@@ -561,4 +565,3 @@ def NBumiPlotDispVsMeanGPU(
 
 if __name__ == "__main__":
     print("NBumi GPU Diagnostics Module Loaded.")
-
