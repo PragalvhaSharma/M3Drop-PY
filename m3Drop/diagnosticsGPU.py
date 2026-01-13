@@ -357,7 +357,6 @@ def NBumiCompareModelsGPU(
     if os.path.exists(basic_norm_filename):
         os.remove(basic_norm_filename)
 
-    # Manual Metadata Read (Lightweight)
     with h5py.File(cleaned_filename, 'r') as f_in:
         nc, ng = f_in['X'].attrs['shape'] if 'shape' in f_in['X'].attrs else f_in['X'].shape
     
@@ -367,11 +366,11 @@ def NBumiCompareModelsGPU(
     size_factors = np.ones_like(cell_sums, dtype=np.float32)
     size_factors[positive_mask] = cell_sums[positive_mask] / median_sum
     
-    # [FIX 3] Use the core Governor
+    # Governor Check 1: Optimize for the INPUT file (Sparse/Light)
     if chunk_size is None:
         chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=4.0, is_dense=False)
 
-    # Create Output H5 (Raw h5py, no AnnData overhead)
+    # Create Output H5
     with h5py.File(basic_norm_filename, 'w') as f_out:
         x_grp = f_out.create_group('X')
         x_grp.attrs['encoding-type'] = 'csr_matrix'
@@ -384,7 +383,6 @@ def NBumiCompareModelsGPU(
         
         current_nnz = 0
         
-        # Open Input Streaming
         with h5py.File(cleaned_filename, 'r') as f_in:
             x_in = f_in['X']
             is_sparse = isinstance(x_in, h5py.Group)
@@ -411,12 +409,10 @@ def NBumiCompareModelsGPU(
                     chunk = x_in[i:end]
                     chunk_gpu = cp.asarray(chunk, dtype=cp.float32)
                 
-                # Normalize
                 factors_chunk = cp.asarray(size_factors[i:end], dtype=cp.float32)
                 chunk_gpu = chunk_gpu / factors_chunk[:, None]
                 chunk_gpu = cp.round(chunk_gpu) 
                 
-                # Convert back to sparse CSR on GPU
                 chunk_csr = csp.csr_matrix(chunk_gpu)
                 
                 data_cpu = cp.asnumpy(chunk_csr.data)
@@ -436,16 +432,20 @@ def NBumiCompareModelsGPU(
                 
                 del chunk_gpu, chunk_csr
                 cp.get_default_memory_pool().free_all_blocks()
-                gc.collect() # [FIX 2]
+                gc.collect()
 
     print(f"\nPhase [1/4]: COMPLETE{' '*20}")
     gc.collect()
 
     # --- Phase 2: Fit Basic Model ---
     print("Phase [2/4]: Fitting Basic Model on normalized data...")
-    # [FIX 3] Pass the unified chunk_size to sub-routines
-    stats_basic = get_basic_stats(basic_norm_filename, chunk_size=chunk_size)
-    fit_basic = NBumiFitBasicModelGPU(basic_norm_filename, stats_basic, chunk_size=chunk_size)
+    
+    # [CRITICAL FIX] RECALCULATE chunk size for the new 121GB file!
+    # The heavy file requires a much smaller chunk (likely ~2,000)
+    chunk_size_basic = get_optimal_chunk_size(basic_norm_filename, multiplier=4.0, is_dense=False)
+    
+    stats_basic = get_basic_stats(basic_norm_filename, chunk_size=chunk_size_basic)
+    fit_basic = NBumiFitBasicModelGPU(basic_norm_filename, stats_basic, chunk_size=chunk_size_basic)
     print("Phase [2/4]: COMPLETE")
 
     # --- Phase 3: Evaluate Fits ---
@@ -503,7 +503,7 @@ def NBumiCompareModelsGPU(
         "errors": {"Depth-Adjusted": err_adj, "Basic": err_bas},
         "comparison_df": comparison_df
     }
-
+    
 def NBumiPlotDispVsMeanGPU(
     fit: dict,
     suppress_plot: bool = False,
@@ -561,3 +561,4 @@ def NBumiPlotDispVsMeanGPU(
 
 if __name__ == "__main__":
     print("NBumi GPU Diagnostics Module Loaded.")
+
