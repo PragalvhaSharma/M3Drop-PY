@@ -10,6 +10,7 @@ import psutil
 import gc
 from scipy import sparse
 from scipy import stats
+import anndata  # <--- FIXED: Added missing import
 
 # [GOVERNOR INTEGRATION] Added get_optimal_chunk_size
 from .coreGPU import hidden_calc_valsGPU, NBumiFitModelGPU, NBumiFitDispVsMeanGPU, get_optimal_chunk_size
