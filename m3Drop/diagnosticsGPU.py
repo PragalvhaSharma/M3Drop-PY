@@ -8,6 +8,7 @@ import h5py
 import os
 import time
 import psutil
+import gc
 from scipy import sparse
 from scipy import stats
 
@@ -60,13 +61,13 @@ def calculate_optimal_chunk_size(n_vars, dtype_size=4, memory_multiplier=3.0, ov
 def NBumiFitDispVsMean_Internal(fit_data):
     """
     Performs the log-log linear regression of Dispersion (size) vs Mean Expression.
-    Used to smooth the size parameters for the dropout check.
+    Standard OLS (matches CPU behavior).
     """
     stats_data = fit_data['vals']
     sizes = fit_data['sizes'].values
     means = stats_data['tjs'].values / stats_data['nc']
 
-    # Filter for valid regression points
+    # Filter for valid regression points (Finite and > 0)
     mask = (means > 0) & (sizes > 0) & np.isfinite(sizes) & np.isfinite(means)
     
     if np.sum(mask) < 10:
@@ -75,55 +76,110 @@ def NBumiFitDispVsMean_Internal(fit_data):
     log_means = np.log(means[mask])
     log_sizes = np.log(sizes[mask])
 
+    # Standard Linear Regression (No fancy outlier trimming)
     slope, intercept, r_value, p_value, std_err = stats.linregress(log_means, log_sizes)
     return [intercept, slope]
 
 def get_basic_stats(adata_path, chunk_size=10000):
-    """Calculates basic stats (sum, sum_sq, non-zeros) needed for models."""
-    adata = sc.read_h5ad(adata_path, backed='r')
-    nc, ng = adata.shape
+    """
+    Calculates basic stats using h5py streaming to avoid System RAM OOM.
+    Does NOT load the full AnnData object.
+    """
+    print(f"DEBUG: calculating stats for {adata_path} (Stream Mode)")
     
-    sum_x = cp.zeros(ng, dtype=cp.float64)
-    djs = cp.zeros(ng, dtype=cp.int64) 
-    dis = cp.zeros(nc, dtype=cp.int64) 
-    tis = cp.zeros(nc, dtype=cp.float64) 
-    
-    print(f"DEBUG: calculating stats for {adata_path}")
-    
-    for i in range(0, nc, chunk_size):
-        end = min(i + chunk_size, nc)
-        chunk = adata[i:end].X
-        
-        # --- SAFE LOAD (SPARSE AWARE) ---
-        if isinstance(chunk, pd.DataFrame):
-            chunk = chunk.values
-
-        if sparse.issparse(chunk):
-            chunk_gpu = csp.csr_matrix(chunk, dtype=cp.float32)
-            chunk_gpu = chunk_gpu.toarray() # Convert to dense for reduction
+    with h5py.File(adata_path, 'r') as f:
+        # 1. Determine dimensions from HDF5 attributes
+        if 'X' not in f:
+             raise KeyError(f"File {adata_path} has no 'X' group/dataset.")
+             
+        x_obj = f['X']
+        if isinstance(x_obj, h5py.Group):
+            # Sparse Matrix
+            shape = x_obj.attrs.get('shape')
+            if shape is None:
+                nc = x_obj['indptr'].shape[0] - 1
+                ng = f['var'].shape[0] if 'var' in f else 0 
+            else:
+                nc, ng = shape
+                
+            is_sparse = True
+            h5_data = x_obj['data']
+            h5_indices = x_obj['indices']
+            h5_indptr = x_obj['indptr']
         else:
-            chunk_gpu = cp.asarray(chunk, dtype=cp.float32)
+            # Dense Matrix
+            nc, ng = x_obj.shape
+            is_sparse = False
             
-        sum_x += cp.sum(chunk_gpu, axis=0)
+        # 2. Allocate GPU Accumulators
+        sum_x = cp.zeros(ng, dtype=cp.float64)
+        djs = cp.zeros(ng, dtype=cp.int64) 
+        dis = cp.zeros(nc, dtype=cp.int64) 
+        tis = cp.zeros(nc, dtype=cp.float64) 
         
-        # Dropouts (zeros)
-        is_zero = (chunk_gpu == 0)
-        djs += cp.sum(is_zero, axis=0)
-        
-        # Cell stats
-        dis[i:end] = cp.sum(is_zero, axis=1)
-        tis[i:end] = cp.sum(chunk_gpu, axis=1)
-        
-        del chunk_gpu, is_zero
-        cp.get_default_memory_pool().free_all_blocks()
+        # 3. Stream Data
+        for i in range(0, nc, chunk_size):
+            end = min(i + chunk_size, nc)
+            
+            if is_sparse:
+                # Manual CSR Slicing from disk
+                p_start = h5_indptr[i]
+                p_end = h5_indptr[end]
+                
+                d_chunk = h5_data[p_start:p_end]
+                i_chunk = h5_indices[p_start:p_end]
+                ptr_chunk = h5_indptr[i : end + 1]
+                ptr_chunk = ptr_chunk - ptr_chunk[0]
+                
+                # Construct CSR -> Dense GPU
+                chunk_csr = sparse.csr_matrix((d_chunk, i_chunk, ptr_chunk), shape=(end-i, ng))
+                chunk_gpu = csp.csr_matrix(chunk_csr, dtype=cp.float32)
+                chunk_gpu = chunk_gpu.toarray() 
+                
+            else:
+                chunk = x_obj[i:end]
+                chunk_gpu = cp.asarray(chunk, dtype=cp.float32)
+            
+            # 4. Compute Stats
+            sum_x += cp.sum(chunk_gpu, axis=0)
+            is_zero = (chunk_gpu == 0)
+            djs += cp.sum(is_zero, axis=0)
+            dis[i:end] = cp.sum(is_zero, axis=1)
+            tis[i:end] = cp.sum(chunk_gpu, axis=1)
+            
+            # Cleanup
+            del chunk_gpu, is_zero
+            if is_sparse: del chunk_csr, d_chunk, i_chunk, ptr_chunk
+            cp.get_default_memory_pool().free_all_blocks()
+
+        # 5. Reconstruct Indices
+        try:
+            if 'var' in f and '_index' in f['var']:
+                var_names = f['var']['_index'][:].astype(str)
+            elif 'var' in f and 'index' in f['var']: 
+                var_names = f['var']['index'][:].astype(str)
+            else:
+                var_names = np.arange(ng).astype(str)
+                
+            if 'obs' in f and '_index' in f['obs']:
+                obs_names = f['obs']['_index'][:].astype(str)
+            elif 'obs' in f and 'index' in f['obs']:
+                obs_names = f['obs']['index'][:].astype(str)
+            else:
+                obs_names = np.arange(nc).astype(str)
+                
+        except Exception as e:
+            print(f"WARNING: Could not read indices from H5AD ({e}). Using numeric indices.")
+            var_names = np.arange(ng).astype(str)
+            obs_names = np.arange(nc).astype(str)
 
     return {
         'nc': nc,
         'ng': ng,
-        'tjs': pd.Series(cp.asnumpy(sum_x), index=adata.var_names),
-        'djs': pd.Series(cp.asnumpy(djs), index=adata.var_names),
-        'tis': pd.Series(cp.asnumpy(tis), index=adata.obs_names),
-        'dis': pd.Series(cp.asnumpy(dis), index=adata.obs_names),
+        'tjs': pd.Series(cp.asnumpy(sum_x), index=var_names),
+        'djs': pd.Series(cp.asnumpy(djs), index=var_names),
+        'tis': pd.Series(cp.asnumpy(tis), index=obs_names),
+        'dis': pd.Series(cp.asnumpy(dis), index=obs_names),
         'total': cp.asnumpy(cp.sum(tis))
     }
 
@@ -151,6 +207,8 @@ def NBumiFitBasicModelGPU(
     # 1. Calculate Sum of Squares (Variance)
     sum_x_sq = cp.zeros(ng, dtype=cp.float64)
     
+    # Using sc.read_h5ad is fine here as this function processes the TEMP file
+    # which is cleaner, or we rely on the caller to have GC'd previous heavy objects.
     adata = sc.read_h5ad(cleaned_filename, backed='r')
     
     print("Phase [1/2]: Calculating variance from data chunks (GPU)...")
@@ -160,7 +218,7 @@ def NBumiFitBasicModelGPU(
         
         chunk = adata[i:end].X
         
-        # --- SAFE LOAD (SPARSE AWARE) ---
+        # --- SAFE LOAD ---
         if isinstance(chunk, pd.DataFrame):
             chunk = chunk.values
 
@@ -333,21 +391,20 @@ def NBumiCompareModelsGPU(
 ) -> dict:
     """
     GPU version of Model Comparison.
-    1. Normalizes data to temp file (GPU accelerated).
-    2. Fits Basic Model (GPU).
-    3. Compares errors.
     """
     pipeline_start = time.time()
     print(f"FUNCTION: NBumiCompareModelsGPU() | Comparing models for {cleaned_filename}")
 
-    # --- Phase 1: Normalization (GPU Accelerated) ---
+    # --- Phase 1: Normalization ---
     print("Phase [1/4]: Creating temporary 'basic' normalized data file...")
     basic_norm_filename = cleaned_filename.replace('.h5ad', '_basic_norm.h5ad')
     
+    if os.path.exists(basic_norm_filename):
+        os.remove(basic_norm_filename)
+
     adata = sc.read_h5ad(cleaned_filename, backed='r')
     nc, ng = adata.shape
     
-    # Calculate Size Factors
     cell_sums = stats['tis'].values.astype(np.float64)
     positive_mask = cell_sums > 0
     median_sum = np.median(cell_sums[positive_mask]) if np.any(positive_mask) else 1.0
@@ -357,10 +414,14 @@ def NBumiCompareModelsGPU(
     if chunk_size is None:
         chunk_size = calculate_optimal_chunk_size(ng, dtype_size=4, memory_multiplier=4.0)
 
-    # Initialize output file
+    # Write output shell
     adata_out = sc.AnnData(obs=adata.obs, var=adata.var)
     adata_out.write_h5ad(basic_norm_filename, compression="gzip")
     
+    # Free Heavy Metadata
+    del adata, adata_out
+    gc.collect()
+
     with h5py.File(basic_norm_filename, 'a') as f_out:
         if 'X' in f_out: del f_out['X']
         x_grp = f_out.create_group('X')
@@ -374,18 +435,19 @@ def NBumiCompareModelsGPU(
         
         current_nnz = 0
         
+        # We need to read the input again efficiently
+        adata_in = sc.read_h5ad(cleaned_filename, backed='r')
+        
         for i in range(0, nc, chunk_size):
             end = min(i+chunk_size, nc)
             print(f"Phase [1/4]: Normalizing {end}/{nc}", end='\r')
             
-            chunk = adata[i:end].X
+            chunk = adata_in[i:end].X
             
-            # --- SAFE LOAD (SPARSE AWARE) ---
             if isinstance(chunk, pd.DataFrame):
                 chunk = chunk.values
 
             if sparse.issparse(chunk):
-                # Load as sparse GPU matrix -> Convert to Dense
                 chunk_gpu = csp.csr_matrix(chunk, dtype=cp.float32)
                 chunk_gpu = chunk_gpu.toarray() 
             else:
@@ -399,7 +461,6 @@ def NBumiCompareModelsGPU(
             # Convert back to sparse CSR on GPU
             chunk_csr = csp.csr_matrix(chunk_gpu)
             
-            # Move to CPU for writing
             data_cpu = cp.asnumpy(chunk_csr.data)
             indices_cpu = cp.asnumpy(chunk_csr.indices)
             indptr_cpu = cp.asnumpy(chunk_csr.indptr)
@@ -419,6 +480,9 @@ def NBumiCompareModelsGPU(
             cp.get_default_memory_pool().free_all_blocks()
 
     print(f"\nPhase [1/4]: COMPLETE{' '*20}")
+    
+    del adata_in
+    gc.collect()
 
     # --- Phase 2: Fit Basic Model ---
     print("Phase [2/4]: Fitting Basic Model on normalized data...")
