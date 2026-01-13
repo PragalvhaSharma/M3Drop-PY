@@ -41,11 +41,10 @@ from .coreGPU import (
     NBumiFeatureSelectionHighVarGPU,
     NBumiFeatureSelectionCombinedDropGPU,
     NBumiCombinedDropVolcanoGPU,
-    get_optimal_chunk_size  # Matches the Governor Protocol in Core
+    get_optimal_chunk_size  # The Governor Protocol
 )
 
 # From diagnosticsGPU.py
-# Updated to account for the reconstructed GPU pipeline
 from .diagnosticsGPU import (
     NBumiFitBasicModelGPU,
     NBumiCheckFitFSGPU,
