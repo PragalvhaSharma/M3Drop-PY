@@ -12,7 +12,6 @@ from scipy import sparse
 from scipy import stats
 
 # --- RESTORED IMPORT FROM CORE ---
-# Imported the Governor (get_optimal_chunk_size)
 from .coreGPU import NBumiFitDispVsMeanGPU, get_optimal_chunk_size
 
 # ==============================================================================
@@ -141,9 +140,9 @@ def NBumiFitBasicModelGPU(
     nc, ng = stats['nc'], stats['ng']
     tjs = cp.asarray(stats['tjs'].values, dtype=cp.float64)
     
-    # Use the core Governor instead of local guess
+    # [FIX: is_dense=True] Code performs densification (.toarray()), so we must reserve Dense memory.
     if chunk_size is None:
-        chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=3.0, is_dense=False)
+        chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=3.0, is_dense=True)
 
     # 1. Calculate Sum of Squares (Variance)
     sum_x_sq = cp.zeros(ng, dtype=cp.float64)
@@ -254,9 +253,9 @@ def NBumiCheckFitFSGPU(
     row_ps = cp.zeros(ng, dtype=cp.float64)
     col_ps = cp.zeros(nc, dtype=cp.float64)
     
-    # Use the core Governor
+    # [FIX: is_dense=True] Code uses broadcasting (cp.outer), effectively Dense logic.
     if chunk_size is None:
-        chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=5.0, is_dense=False)
+        chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=5.0, is_dense=True)
 
     print("Phase [2/2]: Calculating expected dropouts (GPU)...")
     for i in range(0, nc, chunk_size):
@@ -366,9 +365,9 @@ def NBumiCompareModelsGPU(
     size_factors = np.ones_like(cell_sums, dtype=np.float32)
     size_factors[positive_mask] = cell_sums[positive_mask] / median_sum
     
-    # Use the core Governor
+    # [FIX: is_dense=True] Code performs densification (.toarray())
     if chunk_size is None:
-        chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=4.0, is_dense=False)
+        chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=4.0, is_dense=True)
 
     # Create Output H5 (Raw h5py, no AnnData overhead)
     with h5py.File(basic_norm_filename, 'w') as f_out:
@@ -443,9 +442,8 @@ def NBumiCompareModelsGPU(
     # --- Phase 2: Fit Basic Model ---
     print("Phase [2/4]: Fitting Basic Model on normalized data...")
     
-    # [CRITICAL UPDATE] RECALCULATE chunk size for the heavy 121GB file!
-    # The Governor will see the huge file size and scale down the chunk size automatically.
-    chunk_size_basic = get_optimal_chunk_size(basic_norm_filename, multiplier=4.0, is_dense=False)
+    # [FIX: is_dense=True]
+    chunk_size_basic = get_optimal_chunk_size(basic_norm_filename, multiplier=4.0, is_dense=True)
     print(f"DEBUG: Re-calculated chunk size for heavy file: {chunk_size_basic}")
 
     stats_basic = get_basic_stats(basic_norm_filename, chunk_size=chunk_size_basic)
