@@ -13,10 +13,11 @@ matplotlib.use('Agg')
 # ==========================================
 DATASET_BASENAME = "test_data"
 
-# --- TOGGLES (A, B, C) ---
+# --- TOGGLES ---
+# Control which downstream branches to run
 RUN_FEATURE_SELECTION = True
-RUN_DIAGNOSTICS       = True  # Set to True to generate Model Comparison & Plots
-RUN_NORMALIZATION     = False # Set to True to generate Pearson Residuals (Heavy IO)
+RUN_DIAGNOSTICS       = True  
+RUN_NORMALIZATION     = True # Heavy IO - Enable only if needed
 
 # --- FILE PATHS ---
 # Input
@@ -28,17 +29,17 @@ STATS_OUTPUT_FILE = f"{DATASET_BASENAME}_stats.pkl"
 FIT_OUTPUT_FILE   = f"{DATASET_BASENAME}_fit.pkl"
 
 # Branch A: Feature Selection Outputs
-HIGH_VAR_OUTPUT_CSV      = f"{DATASET_BASENAME}_4A_high_variance_genes.csv"
-COMBINED_DROP_OUTPUT_CSV = f"{DATASET_BASENAME}_4A_combined_dropout_genes.csv"
-VOLCANO_PLOT_FILE        = f"{DATASET_BASENAME}_4A_volcano_plot.png"
+HIGH_VAR_OUTPUT_CSV      = f"{DATASET_BASENAME}_high_variance_genes.csv"
+COMBINED_DROP_OUTPUT_CSV = f"{DATASET_BASENAME}_combined_dropout_genes.csv"
+VOLCANO_PLOT_FILE        = f"{DATASET_BASENAME}_volcano_plot.png"
 
 # Branch B: Diagnostics Outputs
-DISP_VS_MEAN_PLOT_FILE = f"{DATASET_BASENAME}_4B_disp_vs_mean.png"
-COMPARISON_PLOT_FILE   = f"{DATASET_BASENAME}_4B_NBumiCompareModels.png"
+DISP_VS_MEAN_PLOT_FILE = f"{DATASET_BASENAME}_disp_vs_mean.png"
+COMPARISON_PLOT_FILE   = f"{DATASET_BASENAME}_NBumiCompareModels.png"
 
 # Branch C: Normalization Outputs
-PEARSON_FULL_OUTPUT_FILE   = f"{DATASET_BASENAME}_4C_pearson_residuals.h5ad"
-PEARSON_APPROX_OUTPUT_FILE = f"{DATASET_BASENAME}_4C_pearson_residuals_approx.h5ad"
+PEARSON_FULL_OUTPUT_FILE   = f"{DATASET_BASENAME}_pearson_residuals.h5ad"
+PEARSON_APPROX_OUTPUT_FILE = f"{DATASET_BASENAME}_pearson_residuals_approx.h5ad"
 
 
 # ==========================================
@@ -97,10 +98,10 @@ if __name__ == "__main__":
     print("------------------------------------------------------------\n")
 
     # ---------------------------------------------------------
-    # STAGE 4A: FEATURE SELECTION
+    # BRANCH A: FEATURE SELECTION
     # ---------------------------------------------------------
     if RUN_FEATURE_SELECTION:
-        print(">>> STAGE 4A: FEATURE SELECTION")
+        print(">>> BRANCH A: FEATURE SELECTION")
         
         # Method 1: High Variance
         if not os.path.exists(HIGH_VAR_OUTPUT_CSV):
@@ -130,10 +131,10 @@ if __name__ == "__main__":
         print("------------------------------------------------------------\n")
 
     # ---------------------------------------------------------
-    # STAGE 4B: DIAGNOSTICS
+    # BRANCH B: DIAGNOSTICS
     # ---------------------------------------------------------
     if RUN_DIAGNOSTICS:
-        print(">>> STAGE 4B: DIAGNOSTICS")
+        print(">>> BRANCH B: DIAGNOSTICS")
         
         # 1. Dispersion vs Mean Plot
         if not os.path.exists(DISP_VS_MEAN_PLOT_FILE):
@@ -147,7 +148,7 @@ if __name__ == "__main__":
             print("   Running Model Comparison (Optimized)...")
             M3Drop.NBumiCompareModelsGPU(
                 raw_filename=RAW_DATA_FILE,
-                cleaned_filename=CLEANED_DATA_FILE,
+                cleaned_filename=CLEANED_DATA_FILE, # CRITICAL: Use Cleaned to match Stats
                 stats=stats,
                 fit_adjust=fit_results,
                 plot_filename=COMPARISON_PLOT_FILE
@@ -157,10 +158,10 @@ if __name__ == "__main__":
         print("------------------------------------------------------------\n")
 
     # ---------------------------------------------------------
-    # STAGE 4C: NORMALIZATION
+    # BRANCH C: NORMALIZATION
     # ---------------------------------------------------------
     if RUN_NORMALIZATION:
-        print(">>> STAGE 4C: NORMALIZATION")
+        print(">>> BRANCH C: NORMALIZATION")
         
         # 1. Full Pearson Residuals
         if not os.path.exists(PEARSON_FULL_OUTPUT_FILE):
