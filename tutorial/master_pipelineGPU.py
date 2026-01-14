@@ -28,18 +28,18 @@ CLEANED_DATA_FILE = f"{DATASET_BASENAME}_cleaned.h5ad"
 STATS_OUTPUT_FILE = f"{DATASET_BASENAME}_stats.pkl"
 FIT_OUTPUT_FILE   = f"{DATASET_BASENAME}_fit.pkl"
 
-# Branch A: Feature Selection Outputs
-HIGH_VAR_OUTPUT_CSV      = f"{DATASET_BASENAME}_high_variance_genes.csv"
-COMBINED_DROP_OUTPUT_CSV = f"{DATASET_BASENAME}_combined_dropout_genes.csv"
-VOLCANO_PLOT_FILE        = f"{DATASET_BASENAME}_volcano_plot.png"
+# Branch 4A: Feature Selection Outputs
+HIGH_VAR_OUTPUT_CSV      = f"{DATASET_BASENAME}_4A_high_variance_genes.csv"
+COMBINED_DROP_OUTPUT_CSV = f"{DATASET_BASENAME}_4A_combined_dropout_genes.csv"
+VOLCANO_PLOT_FILE        = f"{DATASET_BASENAME}_4A_volcano_plot.png"
 
-# Branch B: Diagnostics Outputs
-DISP_VS_MEAN_PLOT_FILE = f"{DATASET_BASENAME}_disp_vs_mean.png"
-COMPARISON_PLOT_FILE   = f"{DATASET_BASENAME}_NBumiCompareModels.png"
+# Branch 4B: Diagnostics Outputs
+DISP_VS_MEAN_PLOT_FILE = f"{DATASET_BASENAME}_4B_disp_vs_mean.png"
+COMPARISON_PLOT_FILE   = f"{DATASET_BASENAME}_4B_NBumiCompareModels.png"
 
-# Branch C: Normalization Outputs
-PEARSON_FULL_OUTPUT_FILE   = f"{DATASET_BASENAME}_pearson_residuals.h5ad"
-PEARSON_APPROX_OUTPUT_FILE = f"{DATASET_BASENAME}_pearson_residuals_approx.h5ad"
+# Branch 4C: Normalization Outputs
+PEARSON_FULL_OUTPUT_FILE   = f"{DATASET_BASENAME}_4C_pearson_residuals.h5ad"
+PEARSON_APPROX_OUTPUT_FILE = f"{DATASET_BASENAME}_4C_pearson_residuals_approx.h5ad"
 
 
 # ==========================================
@@ -98,10 +98,10 @@ if __name__ == "__main__":
     print("------------------------------------------------------------\n")
 
     # ---------------------------------------------------------
-    # BRANCH A: FEATURE SELECTION
+    # BRANCH 4A: FEATURE SELECTION
     # ---------------------------------------------------------
     if RUN_FEATURE_SELECTION:
-        print(">>> BRANCH A: FEATURE SELECTION")
+        print(">>> BRANCH 4A: FEATURE SELECTION")
         
         # Method 1: High Variance
         if not os.path.exists(HIGH_VAR_OUTPUT_CSV):
@@ -131,10 +131,10 @@ if __name__ == "__main__":
         print("------------------------------------------------------------\n")
 
     # ---------------------------------------------------------
-    # BRANCH B: DIAGNOSTICS
+    # BRANCH 4B: DIAGNOSTICS
     # ---------------------------------------------------------
     if RUN_DIAGNOSTICS:
-        print(">>> BRANCH B: DIAGNOSTICS")
+        print(">>> BRANCH 4B: DIAGNOSTICS")
         
         # 1. Dispersion vs Mean Plot
         if not os.path.exists(DISP_VS_MEAN_PLOT_FILE):
@@ -158,10 +158,10 @@ if __name__ == "__main__":
         print("------------------------------------------------------------\n")
 
     # ---------------------------------------------------------
-    # BRANCH C: NORMALIZATION
+    # BRANCH 4C: NORMALIZATION
     # ---------------------------------------------------------
     if RUN_NORMALIZATION:
-        print(">>> BRANCH C: NORMALIZATION")
+        print(">>> BRANCH 4C: NORMALIZATION")
         
         # 1. Full Pearson Residuals
         if not os.path.exists(PEARSON_FULL_OUTPUT_FILE):
