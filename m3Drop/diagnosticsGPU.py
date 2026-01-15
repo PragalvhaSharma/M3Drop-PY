@@ -64,40 +64,19 @@ def NBumiFitBasicModelGPU(
             if start_idx == end_idx:
                 continue
             
-            # Process in smaller sub-chunks if needed
-            max_elements = 5_000_000  # Process max 5M elements at a time
+            # Original processing for smaller chunks
+            data_slice = h5_data[start_idx:end_idx]
+            indices_slice = h5_indices[start_idx:end_idx]
+
+            data_gpu = cp.asarray(data_slice, dtype=cp.float64)
+            indices_gpu = cp.asarray(indices_slice)
+
+            # Accumulate the sum of squares for each gene
+            cp.add.at(sum_x_sq_gpu, indices_gpu, data_gpu**2)
             
-            if end_idx - start_idx > max_elements:
-                # Process in sub-chunks
-                for sub_start in range(start_idx, end_idx, max_elements):
-                    sub_end = min(sub_start + max_elements, end_idx)
-                    
-                    data_slice = h5_data[sub_start:sub_end]
-                    indices_slice = h5_indices[sub_start:sub_end]
-                    
-                    data_gpu = cp.asarray(data_slice, dtype=cp.float64)
-                    indices_gpu = cp.asarray(indices_slice)
-                    
-                    # Accumulate the sum of squares for each gene
-                    cp.add.at(sum_x_sq_gpu, indices_gpu, data_gpu**2)
-                    
-                    # Free GPU memory
-                    del data_gpu, indices_gpu
-                    cp.get_default_memory_pool().free_all_blocks()
-            else:
-                # Original processing for smaller chunks
-                data_slice = h5_data[start_idx:end_idx]
-                indices_slice = h5_indices[start_idx:end_idx]
-
-                data_gpu = cp.asarray(data_slice, dtype=cp.float64)
-                indices_gpu = cp.asarray(indices_slice)
-
-                # Accumulate the sum of squares for each gene
-                cp.add.at(sum_x_sq_gpu, indices_gpu, data_gpu**2)
-                
-                # Clean up
-                del data_gpu, indices_gpu
-                cp.get_default_memory_pool().free_all_blocks()
+            # Clean up
+            del data_gpu, indices_gpu
+            cp.get_default_memory_pool().free_all_blocks()
     
     print(f"Phase [2/2]: COMPLETE                                       ")
 
@@ -146,8 +125,9 @@ def NBumiCheckFitFSGPU(
     print(f"FUNCTION: NBumiCheckFitFS() | FILE: {cleaned_filename}")
 
     # [GOVERNOR INTEGRATION] Adaptive chunk sizing
+    # [CRITICAL FIX] Increased multiplier to 20.0 to prevent VRAM overflow during dense expansion
     if chunk_size is None:
-        chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=5.0, is_dense=True)
+        chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=20.0, is_dense=True)
 
     # --- Phase 1: Initialization ---
     print("Phase [1/2]: Initializing parameters and arrays on GPU...")
@@ -344,6 +324,7 @@ def NBumiCompareModelsGPU(
                 
                 data_gpu /= size_factors_for_chunk[row_indices]
                 
+                # [RESTORED LEGACY LOGIC] Rounding matches original file.
                 data_cpu = np.round(data_gpu.get())
 
                 num_cells_in_chunk = end_row - i
@@ -378,7 +359,8 @@ def NBumiCompareModelsGPU(
     
     print("Phase [3/4]: Evaluating fits of both models on ORIGINAL data...")
     # [GOVERNOR INTEGRATION] Chunk size for check fit
-    chunk_size_check = get_optimal_chunk_size(cleaned_filename, multiplier=5.0, is_dense=True)
+    # [CRITICAL FIX] Multiplier 20.0 prevents VRAM overflow
+    chunk_size_check = get_optimal_chunk_size(cleaned_filename, multiplier=20.0, is_dense=True)
     
     check_adjust = NBumiCheckFitFSGPU(cleaned_filename, fit_adjust, suppress_plot=True, chunk_size=chunk_size_check)
     
@@ -456,11 +438,6 @@ def NBumiPlotDispVsMeanGPU(
 ):
     """
     Generates a diagnostic plot of the dispersion vs. mean expression.
-
-    Args:
-        fit (dict): The 'fit' object from NBumiFitModelGPU.
-        suppress_plot (bool): If True, the plot will not be displayed on screen.
-        plot_filename (str, optional): Path to save the plot. If None, not saved.
     """
     print("FUNCTION: NBumiPlotDispVsMean()")
 
