@@ -24,9 +24,7 @@ def NBumiPearsonResidualsGPU(
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiPearsonResiduals() | FILE: {cleaned_filename}")
 
-    # --- SAFETY UPDATE ---
-    # Multiplier 10.0 (Was 6.0): Accounts for Float64 precision (8 bytes) vs Governor default (4 bytes).
-    # 4 matrices * 8 bytes = 32 bytes/cell. Governor 10 * 4 = 40 bytes. Safe buffer established.
+    # Governor for Processing (RAM/VRAM)
     chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=10.0, is_dense=True)
 
     # --- Phase 1: Initialization ---
@@ -45,16 +43,26 @@ def NBumiPearsonResidualsGPU(
     tis_gpu = cupy.asarray(tis, dtype=cupy.float64)
     sizes_gpu = cupy.asarray(sizes, dtype=cupy.float64)
 
-    # Create Output H5 (Identical structure to cleaned input)
+    # Create Output H5
     adata_in = anndata.read_h5ad(cleaned_filename, backed='r')
     adata_out = anndata.AnnData(obs=adata_in.obs, var=adata_in.var)
     adata_out.write_h5ad(output_filename, compression="gzip") 
     
+    # [FIX] Calculate Safe Storage Chunk Size (<4GB)
+    # HDF5 limit is 4GB. We target ~500MB for storage chunks to be safe and efficient.
+    bytes_per_row = ng * 4 # float32
+    storage_chunk_rows = int(500_000_000 / bytes_per_row) 
+    if storage_chunk_rows < 1: storage_chunk_rows = 1
+    if storage_chunk_rows > chunk_size: storage_chunk_rows = chunk_size
+    
+    print(f"  > Processing Chunk: {chunk_size} rows (RAM)")
+    print(f"  > Storage Chunk:    {storage_chunk_rows} rows (Disk)")
+
     with h5py.File(output_filename, 'a') as f_out:
         if 'X' in f_out:
             del f_out['X']
-        # Create dataset for dense matrix output (float32)
-        out_x = f_out.create_dataset('X', shape=(nc, ng), chunks=(chunk_size, ng), dtype='float32')
+        # Create dataset with SAFE chunks
+        out_x = f_out.create_dataset('X', shape=(nc, ng), chunks=(storage_chunk_rows, ng), dtype='float32')
 
         print("Phase [1/2]: COMPLETE")
 
@@ -77,7 +85,6 @@ def NBumiPearsonResidualsGPU(
                 indptr_slice = h5_indptr[i:end_row+1] - h5_indptr[i]
 
                 # Convert to Dense GPU Matrix
-                # We construct sparse first, then densify on GPU to save bandwidth
                 counts_chunk_sparse_gpu = cp_csr_matrix((
                     cupy.asarray(data_slice, dtype=cupy.float64),
                     cupy.asarray(indices_slice),
@@ -91,24 +98,18 @@ def NBumiPearsonResidualsGPU(
                 mus_chunk_gpu = tjs_gpu[cupy.newaxis, :] * tis_chunk_gpu[:, cupy.newaxis] / total
                 
                 denominator_gpu = cupy.sqrt(mus_chunk_gpu + mus_chunk_gpu**2 / sizes_gpu[cupy.newaxis, :])
-                
-                # --- LOGIC RESTORED: Prevent Division by Zero ---
                 denominator_gpu = cupy.where(denominator_gpu == 0, 1, denominator_gpu)
 
-                # (Counts - Mu) / Sqrt(V)
                 pearson_chunk_gpu = (counts_chunk_dense_gpu - mus_chunk_gpu) / denominator_gpu
                 
                 # Write to Disk
-                # [OPTIMIZATION] Cast to float32 on GPU to halve PCIe transfer time
                 out_x[i:end_row, :] = pearson_chunk_gpu.astype(cupy.float32).get()
                 
-                # Cleanup
                 del counts_chunk_dense_gpu, counts_chunk_sparse_gpu, mus_chunk_gpu, pearson_chunk_gpu, denominator_gpu
                 cupy.get_default_memory_pool().free_all_blocks()
         
         print(f"Phase [2/2]: COMPLETE{' '*50}")
 
-    # --- LOGIC RESTORED: Explicit File Cleanup ---
     if hasattr(adata_in, "file") and adata_in.file is not None:
         adata_in.file.close()
 
@@ -127,8 +128,6 @@ def NBumiPearsonResidualsApproxGPU(
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiPearsonResidualsApprox() | FILE: {cleaned_filename}")
 
-    # --- HANDSHAKE ---
-    # Multiplier 10.0: Same safety logic as Full residuals.
     chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=10.0, is_dense=True)
 
     # --- Phase 1: Initialization ---
@@ -150,10 +149,17 @@ def NBumiPearsonResidualsApproxGPU(
     adata_out = anndata.AnnData(obs=adata_in.obs, var=adata_in.var)
     adata_out.write_h5ad(output_filename, compression="gzip") 
     
+    # [FIX] Calculate Safe Storage Chunk Size (<4GB)
+    bytes_per_row = ng * 4 
+    storage_chunk_rows = int(500_000_000 / bytes_per_row) 
+    if storage_chunk_rows < 1: storage_chunk_rows = 1
+    if storage_chunk_rows > chunk_size: storage_chunk_rows = chunk_size
+
     with h5py.File(output_filename, 'a') as f_out:
         if 'X' in f_out:
             del f_out['X']
-        out_x = f_out.create_dataset('X', shape=(nc, ng), chunks=(chunk_size, ng), dtype='float32')
+        # Create dataset with SAFE chunks
+        out_x = f_out.create_dataset('X', shape=(nc, ng), chunks=(storage_chunk_rows, ng), dtype='float32')
 
         print("Phase [1/2]: COMPLETE")
 
@@ -185,15 +191,11 @@ def NBumiPearsonResidualsApproxGPU(
                 tis_chunk_gpu = tis_gpu[i:end_row]
                 mus_chunk_gpu = tjs_gpu[cupy.newaxis, :] * tis_chunk_gpu[:, cupy.newaxis] / total
                 
-                # Approx: Denom = Sqrt(Mu)
                 denominator_gpu = cupy.sqrt(mus_chunk_gpu)
-                
-                # --- LOGIC RESTORED: Prevent Division by Zero ---
                 denominator_gpu = cupy.where(denominator_gpu == 0, 1, denominator_gpu)
                 
                 pearson_chunk_gpu = (counts_chunk_dense_gpu - mus_chunk_gpu) / denominator_gpu
                 
-                # [OPTIMIZATION] Cast to float32 on GPU to halve PCIe transfer time
                 out_x[i:end_row, :] = pearson_chunk_gpu.astype(cupy.float32).get()
                 
                 del counts_chunk_dense_gpu, counts_chunk_sparse_gpu, mus_chunk_gpu, pearson_chunk_gpu, denominator_gpu
@@ -201,7 +203,6 @@ def NBumiPearsonResidualsApproxGPU(
         
         print(f"Phase [2/2]: COMPLETE{' '*50}")
 
-    # --- LOGIC RESTORED: Explicit File Cleanup ---
     if hasattr(adata_in, "file") and adata_in.file is not None:
         adata_in.file.close()
 
