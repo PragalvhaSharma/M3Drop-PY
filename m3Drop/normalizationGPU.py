@@ -48,20 +48,23 @@ def NBumiPearsonResidualsGPU(
     adata_out = anndata.AnnData(obs=adata_in.obs, var=adata_in.var)
     adata_out.write_h5ad(output_filename, compression="gzip") 
     
-    # [FIX] Calculate Safe Storage Chunk Size (<4GB)
-    # HDF5 limit is 4GB. We target ~500MB for storage chunks to be safe and efficient.
+    # [FIX] Calculate Safe Storage Chunk Size (~1GB)
+    # HDF5 limit is 4GB. You requested 1GB for optimal speed.
     bytes_per_row = ng * 4 # float32
-    storage_chunk_rows = int(500_000_000 / bytes_per_row) 
+    target_bytes = 1_000_000_000 # 1GB
+    storage_chunk_rows = int(target_bytes / bytes_per_row) 
+    
     if storage_chunk_rows < 1: storage_chunk_rows = 1
-    if storage_chunk_rows > chunk_size: storage_chunk_rows = chunk_size
+    # Note: It is okay if storage_chunk > processing_chunk (HDF5 handles this),
+    # but strictly it must be < 4GB total size.
     
     print(f"  > Processing Chunk: {chunk_size} rows (RAM)")
-    print(f"  > Storage Chunk:    {storage_chunk_rows} rows (Disk)")
+    print(f"  > Storage Chunk:    {storage_chunk_rows} rows (Disk - 1GB Target)")
 
     with h5py.File(output_filename, 'a') as f_out:
         if 'X' in f_out:
             del f_out['X']
-        # Create dataset with SAFE chunks
+        # Create dataset with SAFE chunks (Fixes the ValueError)
         out_x = f_out.create_dataset('X', shape=(nc, ng), chunks=(storage_chunk_rows, ng), dtype='float32')
 
         print("Phase [1/2]: COMPLETE")
@@ -149,11 +152,11 @@ def NBumiPearsonResidualsApproxGPU(
     adata_out = anndata.AnnData(obs=adata_in.obs, var=adata_in.var)
     adata_out.write_h5ad(output_filename, compression="gzip") 
     
-    # [FIX] Calculate Safe Storage Chunk Size (<4GB)
+    # [FIX] Calculate Safe Storage Chunk Size (~1GB)
     bytes_per_row = ng * 4 
-    storage_chunk_rows = int(500_000_000 / bytes_per_row) 
+    target_bytes = 1_000_000_000 # 1GB
+    storage_chunk_rows = int(target_bytes / bytes_per_row) 
     if storage_chunk_rows < 1: storage_chunk_rows = 1
-    if storage_chunk_rows > chunk_size: storage_chunk_rows = chunk_size
 
     with h5py.File(output_filename, 'a') as f_out:
         if 'X' in f_out:
