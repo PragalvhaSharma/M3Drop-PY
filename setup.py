@@ -22,17 +22,18 @@ setuptools.setup(
         "Topic :: Scientific/Engineering :: Bio-Informatics",
     ],
     python_requires='>=3.8',
-    install_requires=[
+install_requires=[
         "anndata>=0.8.0",
         "h5py>=3.8.0",
         "matplotlib>=3.5.0",
         "matplotlib-venn>=0.11",
         "memory_profiler>=0.60.0",
-        "numpy>=1.21.0",       # Caps removed
-        "pandas>=1.5.0",       # Caps removed
+        "numpy>=1.21.0",
+        "pandas>=1.5.0",
+        "py-cpuinfo",          # <--- ADDED HERE
         "scanpy>=1.9.0",
-        "scikit-learn>=1.0.0", # Caps removed
-        "scipy>=1.8.0",        # Caps removed
+        "scikit-learn>=1.0.0",
+        "scipy>=1.8.0",
         "seaborn>=0.11.0",
         "statsmodels>=0.13.0",
     ],
