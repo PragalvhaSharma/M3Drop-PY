@@ -39,7 +39,6 @@ setuptools.setup(
         "scipy>=1.8.0",
         "seaborn>=0.11.0",
         "statsmodels>=0.13.0",
-        # --- NEW DEPENDENCIES ---
         "numba>=0.57.0",   
         "psutil>=5.9.0",   
         "py-cpuinfo",      
