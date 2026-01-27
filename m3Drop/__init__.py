@@ -40,7 +40,7 @@ try:
         NBumiCombinedDropVolcanoGPU,
     )
 except ImportError:
-    pass # Handle case where GPU modules might not be present on CPU node
+    pass 
 
 # From DiagnosticsGPU.py
 try:
@@ -60,7 +60,7 @@ try:
     )
 except ImportError:
     pass
-
+    
 # --- Public API ---
 __all__ = [
     # --- CPU ---
