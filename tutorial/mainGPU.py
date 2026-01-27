@@ -9,20 +9,16 @@ import sys
 matplotlib.use('Agg')
 
 # ==========================================
-#        PACKAGE IMPORTS
+#        PACKAGE IMPORT
 # ==========================================
 try:
-    # Importing submodules from the M3Drop package
-    from M3Drop import CoreGPU
-    from M3Drop import DiagnosticsGPU
-    from M3Drop import NormalizationGPU
-    
-    # Note: We do not need to import ControlDevice directly here, 
-    # as it is handled internally by the Core/Diagnostics modules.
+    # We import the entire package as "M3Drop".
+    # This works because __init__.py exposes all the functions for us.
+    import m3Drop as M3Drop
     
 except ImportError as e:
-    print(f"CRITICAL ERROR: Could not import M3Drop package.")
-    print(f"Ensure the 'M3Drop' folder is in the same directory or installed in your Python environment.")
+    print(f"CRITICAL ERROR: Could not import 'm3Drop' package.")
+    print(f"Ensure the 'm3Drop' folder is in the same directory (or installed via pip).")
     print(f"Details: {e}")
     sys.exit(1)
     
@@ -74,7 +70,8 @@ if __name__ == "__main__":
     # ---------------------------------------------------------
     print(">>> STAGE 1: MASK GENERATION")
     if not os.path.exists(MASK_OUTPUT_FILE):
-        CoreGPU.ConvertDataSparseGPU(
+        # Called directly from M3Drop package
+        M3Drop.ConvertDataSparseGPU(
             input_filename=RAW_DATA_FILE,
             output_mask_filename=MASK_OUTPUT_FILE,
             mode=CONTROL_MODE,
@@ -89,7 +86,7 @@ if __name__ == "__main__":
     # ---------------------------------------------------------
     print(">>> STAGE 2: STATISTICS CALCULATION")
     if not os.path.exists(STATS_OUTPUT_FILE):
-        stats = CoreGPU.hidden_calc_valsGPU(
+        stats = M3Drop.hidden_calc_valsGPU(
             filename=RAW_DATA_FILE,     # Reads Raw
             mask_filename=MASK_OUTPUT_FILE, # Applies Mask
             mode=CONTROL_MODE,
@@ -109,7 +106,7 @@ if __name__ == "__main__":
     # ---------------------------------------------------------
     print(">>> STAGE 3: MODEL FITTING")
     if not os.path.exists(FIT_OUTPUT_FILE):
-        fit_results = CoreGPU.NBumiFitModelGPU(
+        fit_results = M3Drop.NBumiFitModelGPU(
             raw_filename=RAW_DATA_FILE,     # Reads Raw
             mask_filename=MASK_OUTPUT_FILE, # Applies Mask
             stats=stats,
@@ -133,13 +130,13 @@ if __name__ == "__main__":
         stage4a_start = time.time()
         
         if not os.path.exists(HIGH_VAR_OUTPUT_CSV):
-            high_var_genes = CoreGPU.NBumiFeatureSelectionHighVarGPU(fit=fit_results)
+            high_var_genes = M3Drop.NBumiFeatureSelectionHighVarGPU(fit=fit_results)
             high_var_genes.to_csv(HIGH_VAR_OUTPUT_CSV, index=False)
         else:
             print(f"   Skipping High Variance (Output exists)")
 
         if not os.path.exists(COMBINED_DROP_OUTPUT_CSV):
-            combined_drop_genes = CoreGPU.NBumiFeatureSelectionCombinedDropGPU(
+            combined_drop_genes = M3Drop.NBumiFeatureSelectionCombinedDropGPU(
                 fit=fit_results,
                 raw_filename=RAW_DATA_FILE,
                 mode=CONTROL_MODE,
@@ -148,7 +145,7 @@ if __name__ == "__main__":
             combined_drop_genes.to_csv(COMBINED_DROP_OUTPUT_CSV, index=False)
             
             if not os.path.exists(VOLCANO_PLOT_FILE):
-                CoreGPU.NBumiCombinedDropVolcanoGPU(
+                M3Drop.NBumiCombinedDropVolcanoGPU(
                     results_df=combined_drop_genes,
                     plot_filename=VOLCANO_PLOT_FILE
                 )
@@ -165,13 +162,13 @@ if __name__ == "__main__":
         print(">>> STAGE 4B: DIAGNOSTICS")
         
         if not os.path.exists(DISP_VS_MEAN_PLOT_FILE):
-            DiagnosticsGPU.NBumiPlotDispVsMeanGPU(
+            M3Drop.NBumiPlotDispVsMeanGPU(
                  fit=fit_results,
                  plot_filename=DISP_VS_MEAN_PLOT_FILE
             )
         
         if not os.path.exists(COMPARISON_PLOT_FILE):
-            DiagnosticsGPU.NBumiCompareModelsGPU(
+            M3Drop.NBumiCompareModelsGPU(
                 raw_filename=RAW_DATA_FILE,     # Reads Raw
                 mask_filename=MASK_OUTPUT_FILE, # Applies Mask
                 stats=stats,
@@ -192,7 +189,7 @@ if __name__ == "__main__":
         stage4c_start = time.time()
         
         if not os.path.exists(PEARSON_FULL_OUTPUT_FILE) or not os.path.exists(PEARSON_APPROX_OUTPUT_FILE):
-            NormalizationGPU.NBumiPearsonResidualsCombinedGPU(
+            M3Drop.NBumiPearsonResidualsCombinedGPU(
                 raw_filename=RAW_DATA_FILE,
                 mask_filename=MASK_OUTPUT_FILE,
                 fit_filename=FIT_OUTPUT_FILE,
