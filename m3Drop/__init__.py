@@ -32,8 +32,8 @@ from .normalizationCPU import (
 
 # --- GPU Functions ---
 
-# From coreGPU.py
-from .coreGPU import (
+# From CoreGPU.py (Capitalized)
+from .CoreGPU import (
     ConvertDataSparseGPU,
     hidden_calc_valsGPU,
     NBumiFitModelGPU,
@@ -41,21 +41,19 @@ from .coreGPU import (
     NBumiFeatureSelectionHighVarGPU,
     NBumiFeatureSelectionCombinedDropGPU,
     NBumiCombinedDropVolcanoGPU,
-    get_optimal_chunk_size  # The Governor Protocol
 )
 
-# From diagnosticsGPU.py
-from .diagnosticsGPU import (
+# From DiagnosticsGPU.py (Capitalized)
+from .DiagnosticsGPU import (
     NBumiFitBasicModelGPU,
     NBumiCheckFitFSGPU,
     NBumiCompareModelsGPU,
     NBumiPlotDispVsMeanGPU,
 )
 
-# From normalizationGPU.py
-from .normalizationGPU import (
-    NBumiPearsonResidualsGPU,
-    NBumiPearsonResidualsApproxGPU,
+# From NormalizationGPU.py (Capitalized)
+from .NormalizationGPU import (
+    NBumiPearsonResidualsCombinedGPU,
 )
 
 
@@ -84,7 +82,7 @@ __all__ = [
     'NBumiPearsonResidualsApproxCPU',
 
     # --- GPU ---
-    # coreGPU
+    # CoreGPU
     'ConvertDataSparseGPU',
     'hidden_calc_valsGPU',
     'NBumiFitModelGPU',
@@ -92,15 +90,13 @@ __all__ = [
     'NBumiFeatureSelectionHighVarGPU',
     'NBumiFeatureSelectionCombinedDropGPU',
     'NBumiCombinedDropVolcanoGPU',
-    'get_optimal_chunk_size', 
     
-    # diagnosticsGPU
+    # DiagnosticsGPU
     'NBumiFitBasicModelGPU',
     'NBumiCheckFitFSGPU',
     'NBumiCompareModelsGPU',
     'NBumiPlotDispVsMeanGPU',
     
-    # normalizationGPU
-    'NBumiPearsonResidualsGPU',
-    'NBumiPearsonResidualsApproxGPU',
+    # NormalizationGPU
+    'NBumiPearsonResidualsCombinedGPU',
 ]
