@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name="M3Drop",
-    version="0.4.43",  # Version bump
+    version="0.4.44",  # Version bump
     author="Tallulah Andrews",
     author_email="tandrew6@uwo.ca",
     description="A Python implementation of the M3Drop single-cell RNA-seq analysis tool.",
@@ -13,6 +13,8 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     url="https://github.com/PragalvhaSharma/m3DropNew",
     license="MIT",
+    # Ensure your folder name matches this include. 
+    # If your folder is named "M3Drop" (PascalCase), change "m3Drop" to "M3Drop" below.
     packages=setuptools.find_packages(include=["m3Drop", "m3Drop.*"]),
     classifiers=[
         "Programming Language :: Python :: 3",
@@ -22,7 +24,7 @@ setuptools.setup(
         "Topic :: Scientific/Engineering :: Bio-Informatics",
     ],
     python_requires='>=3.8',
-install_requires=[
+    install_requires=[
         "anndata>=0.8.0",
         "h5py>=3.8.0",
         "matplotlib>=3.5.0",
@@ -30,12 +32,15 @@ install_requires=[
         "memory_profiler>=0.60.0",
         "numpy>=1.21.0",
         "pandas>=1.5.0",
-        "py-cpuinfo",          # <--- ADDED HERE
         "scanpy>=1.9.0",
         "scikit-learn>=1.0.0",
         "scipy>=1.8.0",
         "seaborn>=0.11.0",
         "statsmodels>=0.13.0",
+        # --- NEW DEPENDENCIES ---
+        "numba>=0.57.0",   # REQUIRED: For CPU optimization kernels
+        "psutil>=5.9.0",   # REQUIRED: For RAM safety limits in ControlDevice
+        "py-cpuinfo",      # REQUIRED: For L3 cache detection
     ],
     extras_require={
         "gpu": ["cupy-cuda12x"],
