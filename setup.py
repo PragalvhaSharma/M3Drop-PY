@@ -4,8 +4,8 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setuptools.setup(
-    name="M3Drop",
-    version="0.4.44",  # Version bump
+    name="M3Drop",  # Name for pip (pip install M3Drop)
+    version="0.4.44",
     author="Tallulah Andrews",
     author_email="tandrew6@uwo.ca",
     description="A Python implementation of the M3Drop single-cell RNA-seq analysis tool.",
@@ -13,9 +13,11 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     url="https://github.com/PragalvhaSharma/m3DropNew",
     license="MIT",
-    # Ensure your folder name matches this include. 
-    # If your folder is named "M3Drop" (PascalCase), change "m3Drop" to "M3Drop" below.
+    
+    # 1. PACKAGE DISCOVERY
+    # Looks for folder 'm3Drop' (lowercase m)
     packages=setuptools.find_packages(include=["m3Drop", "m3Drop.*"]),
+    
     classifiers=[
         "Programming Language :: Python :: 3",
         "Operating System :: OS Independent",
@@ -38,15 +40,18 @@ setuptools.setup(
         "seaborn>=0.11.0",
         "statsmodels>=0.13.0",
         # --- NEW DEPENDENCIES ---
-        "numba>=0.57.0",   # REQUIRED: For CPU optimization kernels
-        "psutil>=5.9.0",   # REQUIRED: For RAM safety limits in ControlDevice
-        "py-cpuinfo",      # REQUIRED: For L3 cache detection
+        "numba>=0.57.0",   
+        "psutil>=5.9.0",   
+        "py-cpuinfo",      
     ],
     extras_require={
         "gpu": ["cupy-cuda12x"],
     },
     include_package_data=True,
+    
+    # 2. DATA MAPPING
+    # Key must match the folder name 'm3Drop'
     package_data={
-        "": ["*.md", "*.txt"],
+        "m3Drop": ["*.md", "*.txt"],
     },
 )
