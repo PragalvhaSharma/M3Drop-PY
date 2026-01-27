@@ -1,211 +1,178 @@
 import pickle
 import time
-import cupy
+import sys
 import numpy as np
 import h5py
 import anndata
 import pandas as pd
-from cupy.sparse import csr_matrix as cp_csr_matrix
 import os
 
-from .ControlDeviceGPU import ControlDevice
+try:
+    import cupy
+    from cupy.sparse import csr_matrix as cp_csr_matrix
+    HAS_GPU = True
+except ImportError:
+    cupy = None
+    HAS_GPU = False
 
-def NBumiPearsonResidualsGPU(
-    cleaned_filename: str,
-    fit_filename: str,
-    output_filename: str
-):
-    """
-    Calculates Pearson residuals. Safe Mode: Multiplier increased to 10.0.
-    """
-    start_time = time.perf_counter()
-    print(f"FUNCTION: NBumiPearsonResiduals() | FILE: {cleaned_filename}")
+# Package-compatible import
+try:
+    from .ControlDeviceGPU import ControlDevice
+except ImportError:
+    # Fallback for direct script execution (debugging)
+    try:
+        from ControlDeviceGPU import ControlDevice
+    except ImportError:
+        print("CRITICAL ERROR: 'ControlDeviceGPU.py' not found.")
+        sys.exit(1)
 
-    # Governor for Processing (RAM/VRAM)
-    chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=10.0, is_dense=True)
+# ==========================================
+#        KERNELS
+# ==========================================
 
-    # --- Phase 1: Initialization ---
-    print("Phase [1/2]: Initializing parameters and preparing output file...")
-    with open(fit_filename, 'rb') as f:
-        fit = pickle.load(f)
+pearson_residual_kernel = cupy.ElementwiseKernel(
+    'float64 count, float64 tj, float64 ti, float64 theta, float64 total', 'float64 out',
+    '''
+    double mu = (tj * ti) / total;
+    double denom_sq = mu + ( (mu * mu) / theta );
+    double denom = sqrt(denom_sq);
+    if (denom < 1e-12) { out = (count == 0.0) ? 0.0 : 0.0; } else { out = (count - mu) / denom; }
+    ''',
+    'pearson_residual_kernel'
+)
 
-    vals = fit['vals']
-    tjs = vals['tjs'].values
-    tis = vals['tis'].values
-    sizes = fit['sizes'].values
-    total = vals['total']
-    nc, ng = vals['nc'], vals['ng']
+pearson_approx_kernel = cupy.ElementwiseKernel(
+    'float64 count, float64 tj, float64 ti, float64 total', 'float64 out',
+    '''
+    double mu = (tj * ti) / total;
+    double denom = sqrt(mu);
+    if (denom < 1e-12) { out = 0.0; } else { out = (count - mu) / denom; }
+    ''',
+    'pearson_approx_kernel'
+)
 
-    tjs_gpu = cupy.asarray(tjs, dtype=cupy.float64)
-    tis_gpu = cupy.asarray(tis, dtype=cupy.float64)
-    sizes_gpu = cupy.asarray(sizes, dtype=cupy.float64)
-
-    # Create Output H5
-    adata_in = anndata.read_h5ad(cleaned_filename, backed='r')
-    adata_out = anndata.AnnData(obs=adata_in.obs, var=adata_in.var)
-    adata_out.write_h5ad(output_filename, compression="gzip") 
-    
-    # [FIX] Calculate Safe Storage Chunk Size (~1GB)
-    # HDF5 limit is 4GB. You requested 1GB for optimal speed.
-    bytes_per_row = ng * 4 # float32
-    target_bytes = 1_000_000_000 # 1GB
-    storage_chunk_rows = int(target_bytes / bytes_per_row) 
-    
-    if storage_chunk_rows < 1: storage_chunk_rows = 1
-    # Note: It is okay if storage_chunk > processing_chunk (HDF5 handles this),
-    # but strictly it must be < 4GB total size.
-    
-    print(f"  > Processing Chunk: {chunk_size} rows (RAM)")
-    print(f"  > Storage Chunk:    {storage_chunk_rows} rows (Disk - 1GB Target)")
-
-    with h5py.File(output_filename, 'a') as f_out:
-        if 'X' in f_out:
-            del f_out['X']
-        # Create dataset with SAFE chunks (Fixes the ValueError)
-        out_x = f_out.create_dataset('X', shape=(nc, ng), chunks=(storage_chunk_rows, ng), dtype='float32')
-
-        print("Phase [1/2]: COMPLETE")
-
-        # --- Phase 2: Calculate Residuals ---
-        print("Phase [2/2]: Calculating Pearson residuals from data chunks...")
-        
-        with h5py.File(cleaned_filename, 'r') as f_in:
-            h5_indptr = f_in['X']['indptr']
-            h5_data = f_in['X']['data']
-            h5_indices = f_in['X']['indices']
-
-            for i in range(0, nc, chunk_size):
-                end_row = min(i + chunk_size, nc)
-                print(f"Phase [2/2]: Processing: {end_row} of {nc} cells.", end='\r')
-
-                # Load Chunk
-                start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
-                data_slice = h5_data[start_idx:end_idx]
-                indices_slice = h5_indices[start_idx:end_idx]
-                indptr_slice = h5_indptr[i:end_row+1] - h5_indptr[i]
-
-                # Convert to Dense GPU Matrix
-                counts_chunk_sparse_gpu = cp_csr_matrix((
-                    cupy.asarray(data_slice, dtype=cupy.float64),
-                    cupy.asarray(indices_slice),
-                    cupy.asarray(indptr_slice)
-                ), shape=(end_row-i, ng))
-                
-                counts_chunk_dense_gpu = counts_chunk_sparse_gpu.todense()
-
-                # Calculate Residuals
-                tis_chunk_gpu = tis_gpu[i:end_row]
-                mus_chunk_gpu = tjs_gpu[cupy.newaxis, :] * tis_chunk_gpu[:, cupy.newaxis] / total
-                
-                denominator_gpu = cupy.sqrt(mus_chunk_gpu + mus_chunk_gpu**2 / sizes_gpu[cupy.newaxis, :])
-                denominator_gpu = cupy.where(denominator_gpu == 0, 1, denominator_gpu)
-
-                pearson_chunk_gpu = (counts_chunk_dense_gpu - mus_chunk_gpu) / denominator_gpu
-                
-                # Write to Disk
-                out_x[i:end_row, :] = pearson_chunk_gpu.astype(cupy.float32).get()
-                
-                del counts_chunk_dense_gpu, counts_chunk_sparse_gpu, mus_chunk_gpu, pearson_chunk_gpu, denominator_gpu
-                cupy.get_default_memory_pool().free_all_blocks()
-        
-        print(f"Phase [2/2]: COMPLETE{' '*50}")
-
-    if hasattr(adata_in, "file") and adata_in.file is not None:
-        adata_in.file.close()
-
-    end_time = time.perf_counter()
-    print(f"Total time: {end_time - start_time:.2f} seconds.\n")
-
-
-def NBumiPearsonResidualsApproxGPU(
-    cleaned_filename: str,
+def NBumiPearsonResidualsCombinedGPU(
+    raw_filename: str, 
+    mask_filename: str, 
+    fit_filename: str, 
     stats_filename: str,
-    output_filename: str
+    output_filename_full: str,
+    output_filename_approx: str,
+    mode: str = "auto",
+    manual_target: int = 3000
 ):
     """
-    Calculates approximate Pearson residuals.
+    UPGRADED: Calculates Full and Approximate residuals in a SINGLE PASS.
     """
     start_time = time.perf_counter()
-    print(f"FUNCTION: NBumiPearsonResidualsApprox() | FILE: {cleaned_filename}")
+    print(f"FUNCTION: NBumiPearsonResidualsCombined() | FILE: {raw_filename}")
 
-    chunk_size = get_optimal_chunk_size(cleaned_filename, multiplier=10.0, is_dense=True)
+    # 1. Load Mask
+    with open(mask_filename, 'rb') as f: mask_cpu = pickle.load(f)
+    mask_gpu = cupy.asarray(mask_cpu)
+    ng_filtered = int(cupy.sum(mask_gpu))
 
-    # --- Phase 1: Initialization ---
-    print("Phase [1/2]: Initializing parameters and preparing output file...")
-    with open(stats_filename, 'rb') as f:
-        stats = pickle.load(f)
+    # 2. Manual Init
+    with h5py.File(raw_filename, 'r') as f: indptr_cpu = f['X']['indptr'][:]; total_rows = len(indptr_cpu) - 1
+    device = ControlDevice(indptr=indptr_cpu, total_rows=total_rows, n_genes=ng_filtered, mode=mode, manual_target=manual_target)
+    nc = device.total_rows
 
-    vals = stats
-    tjs = vals['tjs'].values
-    tis = vals['tis'].values
-    total = vals['total']
-    nc, ng = vals['nc'], vals['ng']
-
-    tjs_gpu = cupy.asarray(tjs, dtype=cupy.float64)
-    tis_gpu = cupy.asarray(tis, dtype=cupy.float64)
-
-    # Create Output H5
-    adata_in = anndata.read_h5ad(cleaned_filename, backed='r')
-    adata_out = anndata.AnnData(obs=adata_in.obs, var=adata_in.var)
-    adata_out.write_h5ad(output_filename, compression="gzip") 
+    print("Phase [1/2]: Initializing parameters...")
+    # Load parameters for both calculations
+    with open(fit_filename, 'rb') as f: fit = pickle.load(f)
+    with open(stats_filename, 'rb') as f: stats = pickle.load(f)
     
-    # [FIX] Calculate Safe Storage Chunk Size (~1GB)
-    bytes_per_row = ng * 4 
-    target_bytes = 1_000_000_000 # 1GB
-    storage_chunk_rows = int(target_bytes / bytes_per_row) 
+    # Common params
+    total = fit['vals']['total']
+    tjs_gpu = cupy.asarray(fit['vals']['tjs'].values, dtype=cupy.float64)
+    tis_gpu = cupy.asarray(fit['vals']['tis'].values, dtype=cupy.float64)
+    
+    # Specific params
+    sizes_gpu = cupy.asarray(fit['sizes'].values, dtype=cupy.float64) # For Full
+
+    # Setup Output Files
+    adata_in = anndata.read_h5ad(raw_filename, backed='r')
+    filtered_var = adata_in.var[mask_cpu]
+    
+    # Create skeletons
+    adata_out_full = anndata.AnnData(obs=adata_in.obs, var=filtered_var)
+    adata_out_full.write_h5ad(output_filename_full, compression=None)
+    
+    adata_out_approx = anndata.AnnData(obs=adata_in.obs, var=filtered_var)
+    adata_out_approx.write_h5ad(output_filename_approx, compression=None)
+    
+    storage_chunk_rows = int(1_000_000_000 / (ng_filtered * 8)) 
     if storage_chunk_rows < 1: storage_chunk_rows = 1
-
-    with h5py.File(output_filename, 'a') as f_out:
-        if 'X' in f_out:
-            del f_out['X']
-        # Create dataset with SAFE chunks
-        out_x = f_out.create_dataset('X', shape=(nc, ng), chunks=(storage_chunk_rows, ng), dtype='float32')
-
-        print("Phase [1/2]: COMPLETE")
-
-        # --- Phase 2: Calculate Residuals ---
-        print("Phase [2/2]: Calculating approx residuals from data chunks...")
+    
+    # Open both files for writing simultaneously
+    with h5py.File(output_filename_full, 'a') as f_full, h5py.File(output_filename_approx, 'a') as f_approx:
+        if 'X' in f_full: del f_full['X']
+        if 'X' in f_approx: del f_approx['X']
         
-        with h5py.File(cleaned_filename, 'r') as f_in:
+        out_x_full = f_full.create_dataset(
+            'X', shape=(nc, ng_filtered), chunks=(storage_chunk_rows, ng_filtered), dtype='float64'
+        )
+        out_x_approx = f_approx.create_dataset(
+            'X', shape=(nc, ng_filtered), chunks=(storage_chunk_rows, ng_filtered), dtype='float64'
+        )
+
+        with h5py.File(raw_filename, 'r') as f_in:
             h5_indptr = f_in['X']['indptr']
             h5_data = f_in['X']['data']
             h5_indices = f_in['X']['indices']
+            
+            current_row = 0
+            while current_row < nc:
+                end_row = device.get_next_chunk(current_row, mode='dense', overhead_multiplier=3.0) # Higher overhead for double write
+                if end_row is None or end_row <= current_row: break
 
-            for i in range(0, nc, chunk_size):
-                end_row = min(i + chunk_size, nc)
-                print(f"Phase [2/2]: Processing: {end_row} of {nc} cells.", end='\r')
+                chunk_size = end_row - current_row
+                print(f"Phase [2/2]: Processing rows {end_row} of {nc} | Chunk: {chunk_size}", end='\r')
 
-                start_idx, end_idx = h5_indptr[i], h5_indptr[end_row]
-                data_slice = h5_data[start_idx:end_idx]
-                indices_slice = h5_indices[start_idx:end_idx]
-                indptr_slice = h5_indptr[i:end_row+1] - h5_indptr[i]
+                start_idx, end_idx = h5_indptr[current_row], h5_indptr[end_row]
+                
+                # Load & Filter
+                data_gpu_raw = cupy.asarray(h5_data[start_idx:end_idx], dtype=cupy.float64)
+                indices_gpu_raw = cupy.asarray(h5_indices[start_idx:end_idx])
+                indptr_gpu_raw = cupy.asarray(h5_indptr[current_row:end_row+1] - h5_indptr[current_row])
+                
+                chunk_gpu = cp_csr_matrix((data_gpu_raw, indices_gpu_raw, indptr_gpu_raw), shape=(chunk_size, len(mask_cpu)))
+                chunk_gpu = chunk_gpu[:, mask_gpu]
+                chunk_gpu.data = cupy.ceil(chunk_gpu.data)
 
-                counts_chunk_sparse_gpu = cp_csr_matrix((
-                    cupy.asarray(data_slice, dtype=cupy.float64),
-                    cupy.asarray(indices_slice),
-                    cupy.asarray(indptr_slice)
-                ), shape=(end_row-i, ng))
-                
-                counts_chunk_dense_gpu = counts_chunk_sparse_gpu.todense()
-
-                tis_chunk_gpu = tis_gpu[i:end_row]
-                mus_chunk_gpu = tjs_gpu[cupy.newaxis, :] * tis_chunk_gpu[:, cupy.newaxis] / total
-                
-                denominator_gpu = cupy.sqrt(mus_chunk_gpu)
-                denominator_gpu = cupy.where(denominator_gpu == 0, 1, denominator_gpu)
-                
-                pearson_chunk_gpu = (counts_chunk_dense_gpu - mus_chunk_gpu) / denominator_gpu
-                
-                out_x[i:end_row, :] = pearson_chunk_gpu.astype(cupy.float32).get()
-                
-                del counts_chunk_dense_gpu, counts_chunk_sparse_gpu, mus_chunk_gpu, pearson_chunk_gpu, denominator_gpu
+                # Dense Conversion
+                counts_dense = chunk_gpu.todense()
+                del chunk_gpu, data_gpu_raw, indices_gpu_raw, indptr_gpu_raw
                 cupy.get_default_memory_pool().free_all_blocks()
+
+                # --- CALC 1: APPROX (Cheaper, do first) ---
+                approx_out = cupy.empty_like(counts_dense)
+                pearson_approx_kernel(
+                    counts_dense,
+                    tjs_gpu,
+                    tis_gpu[current_row:end_row][:, cupy.newaxis], 
+                    total,
+                    approx_out 
+                )
+                out_x_approx[current_row:end_row, :] = approx_out.get()
+                del approx_out
+
+                # --- CALC 2: FULL (In-place on counts_dense to save VRAM) ---
+                pearson_residual_kernel(
+                    counts_dense,
+                    tjs_gpu,
+                    tis_gpu[current_row:end_row][:, cupy.newaxis], 
+                    sizes_gpu,
+                    total,
+                    counts_dense # Overwrite input
+                )
+                out_x_full[current_row:end_row, :] = counts_dense.get()
+                
+                del counts_dense
+                cupy.get_default_memory_pool().free_all_blocks()
+                current_row = end_row
         
-        print(f"Phase [2/2]: COMPLETE{' '*50}")
-
-    if hasattr(adata_in, "file") and adata_in.file is not None:
-        adata_in.file.close()
-
-    end_time = time.perf_counter()
-    print(f"Total time: {end_time - start_time:.2f} seconds.\n")
-
+        print(f"\nPhase [2/2]: COMPLETE{' '*50}")
+    
+    if hasattr(adata_in, "file") and adata_in.file is not None: adata_in.file.close()
+    print(f"Total time: {time.perf_counter() - start_time:.2f} seconds.\n")
