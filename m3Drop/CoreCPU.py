@@ -22,12 +22,10 @@ from scipy.stats import norm
 from scipy import sparse
 from statsmodels.stats.multitest import multipletests
 
-# [REFACTOR] Relative Import
-try:
-    from .ControlDeviceCPU import ControlDevice
-except ImportError:
-    # Fallback for running script directly
-    from ControlDeviceCPU import ControlDevice
+# [FIX] Strict Relative Import
+# This ensures that if ControlDeviceCPU fails to load (e.g. missing dependency), 
+# the real error is shown instead of being masked.
+from .ControlDeviceCPU import ControlDevice
 
 # ==========================================
 #        NUMBA KERNELS (CPU OPTIMIZED)
