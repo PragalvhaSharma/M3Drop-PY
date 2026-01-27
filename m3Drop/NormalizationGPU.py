@@ -1,8 +1,3 @@
-try:
-    from .coreGPU import get_optimal_chunk_size
-except ImportError:
-    from coreGPU import get_optimal_chunk_size
-
 import pickle
 import time
 import cupy
@@ -12,6 +7,8 @@ import anndata
 import pandas as pd
 from cupy.sparse import csr_matrix as cp_csr_matrix
 import os
+
+from .ControlDeviceGPU import ControlDevice
 
 def NBumiPearsonResidualsGPU(
     cleaned_filename: str,
@@ -211,3 +208,4 @@ def NBumiPearsonResidualsApproxGPU(
 
     end_time = time.perf_counter()
     print(f"Total time: {end_time - start_time:.2f} seconds.\n")
+
