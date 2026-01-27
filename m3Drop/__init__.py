@@ -1,11 +1,9 @@
-# M3Drop (Refactored) __init__.py
-# This file imports all CPU and GPU functions to make them
-# directly accessible from the main package.
+# M3Drop/__init__.py
 
 # --- CPU Functions ---
 
-# From coreCPU.py
-from .coreCPU import (
+# From CoreCPU.py
+from .CoreCPU import (
     ConvertDataSparseCPU,
     hidden_calc_valsCPU,
     NBumiFitModelCPU,
@@ -15,54 +13,57 @@ from .coreCPU import (
     NBumiCombinedDropVolcanoCPU,
 )
 
-# From diagnosticsCPU.py
-from .diagnosticsCPU import (
+# From DiagnosticsCPU.py
+from .DiagnosticsCPU import (
     NBumiFitBasicModelCPU,
     NBumiCheckFitFSCPU,
     NBumiCompareModelsCPU,
     NBumiPlotDispVsMeanCPU,
 )
 
-# From normalizationCPU.py
-from .normalizationCPU import (
-    NBumiPearsonResidualsCPU,
-    NBumiPearsonResidualsApproxCPU,
+# From NormalizationCPU.py
+from .NormalizationCPU import (
+    NBumiPearsonResidualsCombinedCPU,
 )
 
+# --- GPU Functions (Placeholders based on your request) ---
 
-# --- GPU Functions ---
+# From CoreGPU.py
+try:
+    from .CoreGPU import (
+        ConvertDataSparseGPU,
+        hidden_calc_valsGPU,
+        NBumiFitModelGPU,
+        NBumiFitDispVsMeanGPU,
+        NBumiFeatureSelectionHighVarGPU,
+        NBumiFeatureSelectionCombinedDropGPU,
+        NBumiCombinedDropVolcanoGPU,
+    )
+except ImportError:
+    pass # Handle case where GPU modules might not be present on CPU node
 
-# From CoreGPU.py (Capitalized)
-from .CoreGPU import (
-    ConvertDataSparseGPU,
-    hidden_calc_valsGPU,
-    NBumiFitModelGPU,
-    NBumiFitDispVsMeanGPU,
-    NBumiFeatureSelectionHighVarGPU,
-    NBumiFeatureSelectionCombinedDropGPU,
-    NBumiCombinedDropVolcanoGPU,
-)
+# From DiagnosticsGPU.py
+try:
+    from .DiagnosticsGPU import (
+        NBumiFitBasicModelGPU,
+        NBumiCheckFitFSGPU,
+        NBumiCompareModelsGPU,
+        NBumiPlotDispVsMeanGPU,
+    )
+except ImportError:
+    pass
 
-# From DiagnosticsGPU.py (Capitalized)
-from .DiagnosticsGPU import (
-    NBumiFitBasicModelGPU,
-    NBumiCheckFitFSGPU,
-    NBumiCompareModelsGPU,
-    NBumiPlotDispVsMeanGPU,
-)
+# From NormalizationGPU.py
+try:
+    from .NormalizationGPU import (
+        NBumiPearsonResidualsCombinedGPU,
+    )
+except ImportError:
+    pass
 
-# From NormalizationGPU.py (Capitalized)
-from .NormalizationGPU import (
-    NBumiPearsonResidualsCombinedGPU,
-)
-
-
-# --- Public API (`__all__`) ---
-# Defines what `from m3Drop import *` will import.
-
+# --- Public API ---
 __all__ = [
     # --- CPU ---
-    # coreCPU
     'ConvertDataSparseCPU',
     'hidden_calc_valsCPU',
     'NBumiFitModelCPU',
@@ -71,18 +72,14 @@ __all__ = [
     'NBumiFeatureSelectionCombinedDropCPU',
     'NBumiCombinedDropVolcanoCPU',
     
-    # diagnosticsCPU
     'NBumiFitBasicModelCPU',
     'NBumiCheckFitFSCPU',
     'NBumiCompareModelsCPU',
     'NBumiPlotDispVsMeanCPU',
     
-    # normalizationCPU
-    'NBumiPearsonResidualsCPU',
-    'NBumiPearsonResidualsApproxCPU',
+    'NBumiPearsonResidualsCombinedCPU',
 
     # --- GPU ---
-    # CoreGPU
     'ConvertDataSparseGPU',
     'hidden_calc_valsGPU',
     'NBumiFitModelGPU',
@@ -91,12 +88,10 @@ __all__ = [
     'NBumiFeatureSelectionCombinedDropGPU',
     'NBumiCombinedDropVolcanoGPU',
     
-    # DiagnosticsGPU
     'NBumiFitBasicModelGPU',
     'NBumiCheckFitFSGPU',
     'NBumiCompareModelsGPU',
     'NBumiPlotDispVsMeanGPU',
     
-    # NormalizationGPU
     'NBumiPearsonResidualsCombinedGPU',
 ]
