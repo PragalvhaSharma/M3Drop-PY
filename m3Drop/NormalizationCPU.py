@@ -14,11 +14,8 @@ except ImportError:
     print("CRITICAL ERROR: 'numba' not found. Please install it (pip install numba).")
     sys.exit(1)
 
-# [REFACTOR] Relative Import
-try:
-    from .ControlDeviceCPU import ControlDevice
-except ImportError:
-    from ControlDeviceCPU import ControlDevice
+# [FIX] Strict Relative Import
+from .ControlDeviceCPU import ControlDevice
 
 # ==========================================
 #        NUMBA KERNELS (CPU)
