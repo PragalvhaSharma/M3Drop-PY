@@ -14,15 +14,9 @@ import statsmodels.api as sm
 from scipy.stats import norm
 from statsmodels.stats.multitest import multipletests
 
-# [REFACTOR] Relative Imports
-try:
-    from .ControlDeviceCPU import ControlDevice
-    # Import the Numba-optimized kernel from CoreCPU
-    from .CoreCPU import hidden_calc_valsCPU, NBumiFitModelCPU, NBumiFitDispVsMeanCPU, dropout_prob_kernel_cpu
-except ImportError:
-    # Fallback
-    from ControlDeviceCPU import ControlDevice
-    from CoreCPU import hidden_calc_valsCPU, NBumiFitModelCPU, NBumiFitDispVsMeanCPU, dropout_prob_kernel_cpu
+# [FIX] Strict Relative Imports
+from .ControlDeviceCPU import ControlDevice
+from .CoreCPU import hidden_calc_valsCPU, NBumiFitModelCPU, NBumiFitDispVsMeanCPU, dropout_prob_kernel_cpu
 
 # ==========================================
 #        DIAGNOSTICS & COMPARISON (CPU)
