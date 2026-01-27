@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name="M3Drop",  # Name for pip (pip install M3Drop)
-    version="0.4.47",
+    version="0.4.48",
     author="Tallulah Andrews",
     author_email="tandrew6@uwo.ca",
     description="A Python implementation of the M3Drop single-cell RNA-seq analysis tool.",
