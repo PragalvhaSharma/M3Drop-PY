@@ -9,20 +9,16 @@ import sys
 matplotlib.use('Agg')
 
 # ==========================================
-#        IMPORTS & SETUP (CPU EDITION)
+#        IMPORTS & SETUP (STANDALONE)
 # ==========================================
-# [REFACTOR] Absolute imports assuming package is named 'M3Drop'
 try:
-    from M3Drop import CoreCPU
-    from M3Drop import DiagnosticsCPU
-    from M3Drop import NormalizationCPU
-    # We import ControlDevice just to verify it exists
-    from M3Drop.ControlDeviceCPU import ControlDevice
+    # Import the package as requested
+    import m3Drop as M3Drop
 except ImportError as e:
-    print(f"CRITICAL ERROR: Missing required module.\nDetails: {e}")
-    print("Ensure the folder is named 'M3Drop' and contains the __init__.py file.")
+    print(f"CRITICAL ERROR: Could not import the 'm3Drop' package.\nDetails: {e}")
+    print("Ensure you have installed the package (pip install .) or are running this script from a location where 'm3Drop' is visible.")
     sys.exit(1)
-    
+
 # ==========================================
 #        MASTER CONFIGURATION
 # ==========================================
@@ -38,7 +34,7 @@ RUN_FEATURE_SELECTION = True
 RUN_DIAGNOSTICS       = True
 RUN_NORMALIZATION     = True
 
-# --- FILE PATHS (Identical to GPU for easy comparison) ---
+# --- FILE PATHS ---
 RAW_DATA_FILE    = f"{DATASET_BASENAME}.h5ad"
 MASK_OUTPUT_FILE = f"{DATASET_BASENAME}_mask.pkl" 
 STATS_OUTPUT_FILE = f"{DATASET_BASENAME}_stats.pkl"
@@ -72,7 +68,8 @@ if __name__ == "__main__":
     # ---------------------------------------------------------
     print(">>> STAGE 1: MASK GENERATION")
     if not os.path.exists(MASK_OUTPUT_FILE):
-        CoreCPU.ConvertDataSparseCPU(
+        # Calls M3Drop package function directly
+        M3Drop.ConvertDataSparseCPU(
             input_filename=RAW_DATA_FILE,
             output_mask_filename=MASK_OUTPUT_FILE,
             mode=CONTROL_MODE,
@@ -87,7 +84,7 @@ if __name__ == "__main__":
     # ---------------------------------------------------------
     print(">>> STAGE 2: STATISTICS CALCULATION")
     if not os.path.exists(STATS_OUTPUT_FILE):
-        stats = CoreCPU.hidden_calc_valsCPU(
+        stats = M3Drop.hidden_calc_valsCPU(
             filename=RAW_DATA_FILE,     
             mask_filename=MASK_OUTPUT_FILE, 
             mode=CONTROL_MODE,
@@ -107,7 +104,7 @@ if __name__ == "__main__":
     # ---------------------------------------------------------
     print(">>> STAGE 3: MODEL FITTING")
     if not os.path.exists(FIT_OUTPUT_FILE):
-        fit_results = CoreCPU.NBumiFitModelCPU(
+        fit_results = M3Drop.NBumiFitModelCPU(
             raw_filename=RAW_DATA_FILE,     
             mask_filename=MASK_OUTPUT_FILE,
             stats=stats,
@@ -131,13 +128,13 @@ if __name__ == "__main__":
         stage4a_start = time.time()
         
         if not os.path.exists(HIGH_VAR_OUTPUT_CSV):
-            high_var_genes = CoreCPU.NBumiFeatureSelectionHighVarCPU(fit=fit_results)
+            high_var_genes = M3Drop.NBumiFeatureSelectionHighVarCPU(fit=fit_results)
             high_var_genes.to_csv(HIGH_VAR_OUTPUT_CSV, index=False)
         else:
             print(f"   Skipping High Variance (Output exists)")
 
         if not os.path.exists(COMBINED_DROP_OUTPUT_CSV):
-            combined_drop_genes = CoreCPU.NBumiFeatureSelectionCombinedDropCPU(
+            combined_drop_genes = M3Drop.NBumiFeatureSelectionCombinedDropCPU(
                 fit=fit_results,
                 raw_filename=RAW_DATA_FILE,
                 mode=CONTROL_MODE,
@@ -146,7 +143,7 @@ if __name__ == "__main__":
             combined_drop_genes.to_csv(COMBINED_DROP_OUTPUT_CSV, index=False)
             
             if not os.path.exists(VOLCANO_PLOT_FILE):
-                CoreCPU.NBumiCombinedDropVolcanoCPU(
+                M3Drop.NBumiCombinedDropVolcanoCPU(
                     results_df=combined_drop_genes,
                     plot_filename=VOLCANO_PLOT_FILE
                 )
@@ -163,13 +160,13 @@ if __name__ == "__main__":
         print(">>> STAGE 4B: DIAGNOSTICS")
         
         if not os.path.exists(DISP_VS_MEAN_PLOT_FILE):
-            DiagnosticsCPU.NBumiPlotDispVsMeanCPU(
+            M3Drop.NBumiPlotDispVsMeanCPU(
                  fit=fit_results,
                  plot_filename=DISP_VS_MEAN_PLOT_FILE
             )
         
         if not os.path.exists(COMPARISON_PLOT_FILE):
-            DiagnosticsCPU.NBumiCompareModelsCPU(
+            M3Drop.NBumiCompareModelsCPU(
                 raw_filename=RAW_DATA_FILE,    
                 mask_filename=MASK_OUTPUT_FILE, 
                 stats=stats,
@@ -190,7 +187,7 @@ if __name__ == "__main__":
         stage4c_start = time.time()
         
         if not os.path.exists(PEARSON_FULL_OUTPUT_FILE) or not os.path.exists(PEARSON_APPROX_OUTPUT_FILE):
-            NormalizationCPU.NBumiPearsonResidualsCombinedCPU(
+            M3Drop.NBumiPearsonResidualsCombinedCPU(
                 raw_filename=RAW_DATA_FILE,
                 mask_filename=MASK_OUTPUT_FILE,
                 fit_filename=FIT_OUTPUT_FILE,
