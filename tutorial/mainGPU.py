@@ -152,7 +152,7 @@ if __name__ == "__main__":
         else:
             print(f"   Skipping Combined Dropout (Output exists)")
             
-        print(f"Stage 4A Complete. Total Time: {time.time() - stage4a_start:.2f} seconds.")
+        print(f"Total Time: {time.time() - stage4a_start:.2f} seconds.")
         print("------------------------------------------------------------\n")
 
     # ---------------------------------------------------------
