@@ -231,7 +231,8 @@ def NBumiCheckFitFSGPU(
             p_is_chunk_gpu           # Output
         )
 
-        p_is_chunk_gpu = cp.nan_to_num(p_is_chunk_gpu, nan=0.0, posinf=1.0, neginf=0.0)
+        # [MEMORY FIX] Use copy=False to prevent doubling memory usage
+        cp.nan_to_num(p_is_chunk_gpu, copy=False, nan=0.0, posinf=1.0, neginf=0.0)
         
         row_ps_gpu += p_is_chunk_gpu.sum(axis=0)
         col_ps_gpu[current_row:end_row] = p_is_chunk_gpu.sum(axis=1)
@@ -275,7 +276,7 @@ def NBumiCompareModelsGPU(
         stats, 
         mask_filename=mask_filename,
         mode=mode, 
-        manual_target=manual_target,
+        manual_target=manual_target, 
         phase_label="Phase [1/3]",
         desc_label="Fitting Basic Model (Virtual)..."
     )
