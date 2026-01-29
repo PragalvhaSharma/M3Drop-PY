@@ -122,9 +122,17 @@ def NBumiPearsonResidualsCombinedCPU(
     adata_out_approx = anndata.AnnData(obs=adata_in.obs, var=filtered_var)
     adata_out_approx.write_h5ad(output_filename_approx, compression=None)
     
+    # --- CHUNK SIZE FIX ---
     # Calculate appropriate H5 storage chunks
     storage_chunk_rows = int(1_000_000_000 / (ng_filtered * 8)) 
-    if storage_chunk_rows < 1: storage_chunk_rows = 1
+    
+    # [CRITICAL FIX] Clamp chunk size to total rows (nc)
+    if storage_chunk_rows > nc: 
+        storage_chunk_rows = nc
+        
+    if storage_chunk_rows < 1: 
+        storage_chunk_rows = 1
+    # ----------------------
     
     # Open both files for writing simultaneously
     with h5py.File(output_filename_full, 'a') as f_full, h5py.File(output_filename_approx, 'a') as f_approx:
