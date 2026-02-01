@@ -306,12 +306,12 @@ def NBumiPearsonResidualsCombinedGPU(
         ax.set_xlabel("Mean Raw Expression (log)")
         ax.set_ylabel("Variance of Residuals (log)")
         ax.legend()
-        ax.grid(True, which='both', linestyle='--', alpha=0.5) # Enhanced Grid
+        ax.grid(True, which='both', linestyle='--', alpha=0.5) 
         ax.text(0.5, -0.15, "Goal: Blue dots should form a flat line at y=1", 
                 transform=ax.transAxes, ha='center', fontsize=9, 
                 bbox=dict(facecolor='#f0f0f0', edgecolor='black', alpha=0.7))
 
-        # Plot 3: Distribution (Histogram + KDE Overlay)
+        # Plot 3: Distribution (Histogram + KDE Overlay) - LOG SCALE FIXED
         ax = ax1[1]
         if len(flat_approx) > 100:
             mask_kde = (flat_approx > -10) & (flat_approx < 10)
@@ -325,8 +325,10 @@ def NBumiPearsonResidualsCombinedGPU(
             sns.kdeplot(flat_approx[mask_kde], fill=False, color='red', linewidth=2, label='Approx', ax=ax, warn_singular=False)
             sns.kdeplot(flat_full[mask_kde], fill=False, color='blue', linewidth=2, label='Full', ax=ax, warn_singular=False)
 
+        ax.set_yscale('log') # <--- THE CRITICAL FIX FOR "SHIT GRAPH"
+        ax.set_ylim(bottom=0.001) # Safety floor for log(0)
         ax.set_xlim(-5, 5)
-        ax.set_title("Distribution of Residuals")
+        ax.set_title("Distribution of Residuals (Log Scale)")
         ax.set_xlabel("Residual Value")
         ax.legend()
         ax.grid(True, alpha=0.3)
