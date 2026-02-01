@@ -189,7 +189,8 @@ def NBumiPearsonResidualsCombinedGPU(
                 if n_samples_chunk > 0:
                     # Index Sampling: Zero VRAM overhead compared to Masking
                     # Use flatten indices
-                    sample_indices = cupy.random.choice(chunk_total_items, size=n_samples_chunk, replace=False)
+                    # [FIXED LINE BELOW] Added int() cast for safety
+                    sample_indices = cupy.random.choice(int(chunk_total_items), size=n_samples_chunk, replace=False)
                 else:
                     sample_indices = None
 
