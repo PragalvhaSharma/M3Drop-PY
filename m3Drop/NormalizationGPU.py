@@ -187,10 +187,11 @@ def NBumiPearsonResidualsCombinedGPU(
                 n_samples_chunk = int(chunk_total_items * sampling_rate)
                 
                 if n_samples_chunk > 0:
-                    # Index Sampling: Zero VRAM overhead compared to Masking
-                    # Use flatten indices
-                    # [FIXED LINE BELOW] Added int() cast for safety
-                    sample_indices = cupy.random.choice(int(chunk_total_items), size=n_samples_chunk, replace=False)
+                    # [CRITICAL FIX] Use randint (with replacement) instead of choice(replace=False).
+                    # 'choice' with replace=False tries to allocate a permutation of the ENTIRE chunk (3GB+).
+                    # 'randint' only allocates the indices we need (KB).
+                    # Given the huge population (300M+) and small sample (100k+), collisions are statistically negligible.
+                    sample_indices = cupy.random.randint(0, int(chunk_total_items), size=n_samples_chunk)
                 else:
                     sample_indices = None
 
