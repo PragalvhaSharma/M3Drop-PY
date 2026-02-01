@@ -119,9 +119,7 @@ def NBumiPearsonResidualsCombinedGPU(
     print(f"   > Visualization Sampling Rate: {sampling_rate*100:.4f}% (Target: {TARGET_SAMPLES:,} points)")
 
     # 2. Accumulators for Plot 1 (Variance) - EXACT MATH
-    # We need Sum(x) and Sum(x^2) for: Raw, Approx, Full
     acc_raw_sum = cupy.zeros(ng_filtered, dtype=cupy.float64)
-    # acc_raw_sq  = cupy.zeros(ng_filtered, dtype=cupy.float64) # Not strictly needed for Mean X-axis, but good for completeness. Skipping to save VRAM.
     
     acc_approx_sum = cupy.zeros(ng_filtered, dtype=cupy.float64)
     acc_approx_sq  = cupy.zeros(ng_filtered, dtype=cupy.float64)
@@ -154,7 +152,7 @@ def NBumiPearsonResidualsCombinedGPU(
             
             current_row = 0
             while current_row < nc:
-                # [SAFE MODE] Multiplier 3.0 is safe for Index Sampling
+                # [SAFE MODE RESTORED] Multiplier 3.0 is efficient because we use IN-PLACE ops below.
                 end_row = device.get_next_chunk(current_row, mode='dense', overhead_multiplier=3.0)
                 if end_row is None or end_row <= current_row: break
 
@@ -178,24 +176,21 @@ def NBumiPearsonResidualsCombinedGPU(
                 cupy.get_default_memory_pool().free_all_blocks()
 
                 # --- VIZ ACCUMULATION 1: RAW MEAN ---
-                # Add raw sums to accumulator (column-wise sum)
                 acc_raw_sum += cupy.sum(counts_dense, axis=0)
                 
                 # --- VIZ SAMPLING: GENERATE INDICES ---
-                # We pick indices NOW so we can grab the same points from both Approx and Full
                 chunk_total_items = chunk_size * ng_filtered
                 n_samples_chunk = int(chunk_total_items * sampling_rate)
                 
                 if n_samples_chunk > 0:
-                    # [CRITICAL FIX] Use randint (with replacement) instead of choice(replace=False).
-                    # 'choice' with replace=False tries to allocate a permutation of the ENTIRE chunk (3GB+).
-                    # 'randint' only allocates the indices we need (KB).
-                    # Given the huge population (300M+) and small sample (100k+), collisions are statistically negligible.
+                    # [SAFE] Use randint (with replacement) to avoid VRAM spike
                     sample_indices = cupy.random.randint(0, int(chunk_total_items), size=n_samples_chunk)
                 else:
                     sample_indices = None
 
-                # --- CALC 1: APPROX ---
+                # ============================================
+                #   CALC 1: APPROX (Optimize Order of Ops)
+                # ============================================
                 approx_out = cupy.empty_like(counts_dense)
                 pearson_approx_kernel(
                     counts_dense,
@@ -205,40 +200,53 @@ def NBumiPearsonResidualsCombinedGPU(
                     approx_out 
                 )
                 
-                # [VIZ UPDATE: APPROX]
+                # 1. Accumulate Sum (First Moment)
                 acc_approx_sum += cupy.sum(approx_out, axis=0)
-                acc_approx_sq  += cupy.sum(approx_out**2, axis=0)
                 
+                # 2. Sample (Before we destroy the data)
                 if sample_indices is not None:
-                    # Flatten temporarily to sample, then return to CPU
-                    # Note: take() returns a new array, small size
                     sampled_vals = approx_out.ravel().take(sample_indices)
                     viz_approx_samples.append(cupy.asnumpy(sampled_vals))
 
-                # [DISK WRITE: APPROX]
+                # 3. Write to Disk (Save the clean residuals)
                 out_x_approx[current_row:end_row, :] = approx_out.get()
+
+                # 4. Square IN-PLACE (Destroying VRAM copy to create squares without allocation)
+                approx_out *= approx_out 
+                
+                # 5. Accumulate Sum of Squares (Second Moment)
+                acc_approx_sq += cupy.sum(approx_out, axis=0)
+                
                 del approx_out
 
-                # --- CALC 2: FULL (In-place) ---
+                # ============================================
+                #   CALC 2: FULL (Optimize Order of Ops)
+                # ============================================
                 pearson_residual_kernel(
                     counts_dense,
                     tjs_gpu,
                     tis_gpu[current_row:end_row][:, cupy.newaxis], 
                     sizes_gpu,
                     total,
-                    counts_dense # Overwrite input
+                    counts_dense # Overwrite input with Residuals
                 )
                 
-                # [VIZ UPDATE: FULL]
+                # 1. Accumulate Sum
                 acc_full_sum += cupy.sum(counts_dense, axis=0)
-                acc_full_sq  += cupy.sum(counts_dense**2, axis=0)
                 
+                # 2. Sample
                 if sample_indices is not None:
                     sampled_vals = counts_dense.ravel().take(sample_indices)
                     viz_full_samples.append(cupy.asnumpy(sampled_vals))
 
-                # [DISK WRITE: FULL]
+                # 3. Write to Disk
                 out_x_full[current_row:end_row, :] = counts_dense.get()
+
+                # 4. Square IN-PLACE
+                counts_dense *= counts_dense
+                
+                # 5. Accumulate Sum of Squares
+                acc_full_sq += cupy.sum(counts_dense, axis=0)
                 
                 del counts_dense, sample_indices
                 cupy.get_default_memory_pool().free_all_blocks()
@@ -253,10 +261,6 @@ def NBumiPearsonResidualsCombinedGPU(
         print("Phase [Viz]: Generating Diagnostics...")
         
         # 1. Finalize Variance Stats (GPU -> CPU)
-        # Var = E[X^2] - (E[X])^2
-        # Mean = Sum / N
-        
-        # Pull everything to CPU once
         raw_sum = cupy.asnumpy(acc_raw_sum)
         
         approx_sum = cupy.asnumpy(acc_approx_sum)
@@ -265,7 +269,7 @@ def NBumiPearsonResidualsCombinedGPU(
         full_sum   = cupy.asnumpy(acc_full_sum)
         full_sq    = cupy.asnumpy(acc_full_sq)
         
-        # Calculate
+        # Calculate Variance: E[X^2] - (E[X])^2
         mean_raw = raw_sum / nc
         
         mean_approx = approx_sum / nc
@@ -288,7 +292,7 @@ def NBumiPearsonResidualsCombinedGPU(
 
         # --- FILE 1: SUMMARY (1080p) ---
         print(f"   > Saving Summary Plot: {plot_summary_filename}")
-        fig1, ax1 = plt.subplots(1, 2, figsize=(16, 7)) # 16x7 inches ~ 1080p aspect
+        fig1, ax1 = plt.subplots(1, 2, figsize=(16, 7))
         
         # Plot 1: Variance Stabilization
         ax = ax1[0]
@@ -309,7 +313,6 @@ def NBumiPearsonResidualsCombinedGPU(
         # Plot 3: Distribution
         ax = ax1[1]
         if len(flat_approx) > 100:
-            # Clip for cleaner KDE
             mask_kde = (flat_approx > -10) & (flat_approx < 10)
             sns.kdeplot(flat_approx[mask_kde], fill=True, color='red', alpha=0.3, label='Approx', ax=ax, warn_singular=False)
             sns.kdeplot(flat_full[mask_kde], fill=True, color='blue', alpha=0.3, label='Full', ax=ax, warn_singular=False)
@@ -323,17 +326,15 @@ def NBumiPearsonResidualsCombinedGPU(
                 bbox=dict(facecolor='#f0f0f0', edgecolor='black', alpha=0.7))
 
         plt.tight_layout()
-        plt.savefig(plot_summary_filename, dpi=120) # 120 DPI * 16 inch = 1920 width
+        plt.savefig(plot_summary_filename, dpi=120) 
         plt.close()
 
         # --- FILE 2: DETAIL (4K) ---
         print(f"   > Saving Detail Plot: {plot_detail_filename}")
-        fig2, ax2 = plt.subplots(figsize=(20, 11)) # 20x11 inches ~ 4K aspect
+        fig2, ax2 = plt.subplots(figsize=(20, 11))
         
         if len(flat_approx) > 0:
             ax2.scatter(flat_approx, flat_full, s=1, alpha=0.5, color='purple')
-            
-            # Diagonal line
             lims = [
                 np.min([ax2.get_xlim(), ax2.get_ylim()]),
                 np.max([ax2.get_xlim(), ax2.get_ylim()]),
@@ -349,9 +350,8 @@ def NBumiPearsonResidualsCombinedGPU(
                 bbox=dict(facecolor='#f0f0f0', edgecolor='black', alpha=0.7))
         
         plt.tight_layout()
-        plt.savefig(plot_detail_filename, dpi=200) # 200 DPI * 20 inch = 4000 width (4Kish)
+        plt.savefig(plot_detail_filename, dpi=200)
         plt.close()
 
-    
     if hasattr(adata_in, "file") and adata_in.file is not None: adata_in.file.close()
     print(f"Total time: {time.perf_counter() - start_time:.2f} seconds.\n")
