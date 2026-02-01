@@ -176,6 +176,7 @@ def NBumiPearsonResidualsCombinedGPU(
                 cupy.get_default_memory_pool().free_all_blocks()
 
                 # --- VIZ ACCUMULATION 1: RAW MEAN ---
+                # Add raw sums to accumulator (column-wise sum)
                 acc_raw_sum += cupy.sum(counts_dense, axis=0)
                 
                 # --- VIZ SAMPLING: GENERATE INDICES ---
@@ -305,17 +306,25 @@ def NBumiPearsonResidualsCombinedGPU(
         ax.set_xlabel("Mean Raw Expression (log)")
         ax.set_ylabel("Variance of Residuals (log)")
         ax.legend()
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, which='both', linestyle='--', alpha=0.5) # Enhanced Grid
         ax.text(0.5, -0.15, "Goal: Blue dots should form a flat line at y=1", 
                 transform=ax.transAxes, ha='center', fontsize=9, 
                 bbox=dict(facecolor='#f0f0f0', edgecolor='black', alpha=0.7))
 
-        # Plot 3: Distribution
+        # Plot 3: Distribution (Histogram + KDE Overlay)
         ax = ax1[1]
         if len(flat_approx) > 100:
             mask_kde = (flat_approx > -10) & (flat_approx < 10)
-            sns.kdeplot(flat_approx[mask_kde], fill=True, color='red', alpha=0.3, label='Approx', ax=ax, warn_singular=False)
-            sns.kdeplot(flat_full[mask_kde], fill=True, color='blue', alpha=0.3, label='Full', ax=ax, warn_singular=False)
+            
+            # Histograms (The Truth)
+            bins = np.linspace(-5, 5, 100)
+            ax.hist(flat_approx[mask_kde], bins=bins, color='red', alpha=0.2, density=True, label='_nolegend_')
+            ax.hist(flat_full[mask_kde], bins=bins, color='blue', alpha=0.2, density=True, label='_nolegend_')
+
+            # KDEs (The Trend)
+            sns.kdeplot(flat_approx[mask_kde], fill=False, color='red', linewidth=2, label='Approx', ax=ax, warn_singular=False)
+            sns.kdeplot(flat_full[mask_kde], fill=False, color='blue', linewidth=2, label='Full', ax=ax, warn_singular=False)
+
         ax.set_xlim(-5, 5)
         ax.set_title("Distribution of Residuals")
         ax.set_xlabel("Residual Value")
@@ -335,6 +344,7 @@ def NBumiPearsonResidualsCombinedGPU(
         
         if len(flat_approx) > 0:
             ax2.scatter(flat_approx, flat_full, s=1, alpha=0.5, color='purple')
+            
             lims = [
                 np.min([ax2.get_xlim(), ax2.get_ylim()]),
                 np.max([ax2.get_xlim(), ax2.get_ylim()]),
