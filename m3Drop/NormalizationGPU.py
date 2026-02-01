@@ -6,10 +6,13 @@ import h5py
 import anndata
 import pandas as pd
 import os
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 try:
     import cupy
     from cupy.sparse import csr_matrix as cp_csr_matrix
+    import cupyx
     HAS_GPU = True
 except ImportError:
     cupy = None
@@ -19,7 +22,6 @@ except ImportError:
 try:
     from .ControlDeviceGPU import ControlDevice
 except ImportError:
-    # Fallback for direct script execution (debugging)
     try:
         from ControlDeviceGPU import ControlDevice
     except ImportError:
@@ -58,11 +60,14 @@ def NBumiPearsonResidualsCombinedGPU(
     stats_filename: str,
     output_filename_full: str,
     output_filename_approx: str,
+    plot_summary_filename: str = None,
+    plot_detail_filename: str = None,
     mode: str = "auto",
     manual_target: int = 3000
 ):
     """
-    UPGRADED: Calculates Full and Approximate residuals in a SINGLE PASS.
+    Calculates Full and Approximate residuals in a SINGLE PASS.
+    Includes "Sidecar" Visualization logic (Streaming Stats + Subsampling).
     """
     start_time = time.perf_counter()
     print(f"FUNCTION: NBumiPearsonResidualsCombined() | FILE: {raw_filename}")
@@ -73,22 +78,22 @@ def NBumiPearsonResidualsCombinedGPU(
     ng_filtered = int(cupy.sum(mask_gpu))
 
     # 2. Manual Init
-    with h5py.File(raw_filename, 'r') as f: indptr_cpu = f['X']['indptr'][:]; total_rows = len(indptr_cpu) - 1
+    with h5py.File(raw_filename, 'r') as f: 
+        indptr_cpu = f['X']['indptr'][:]
+        total_rows = len(indptr_cpu) - 1
+        
     device = ControlDevice(indptr=indptr_cpu, total_rows=total_rows, n_genes=ng_filtered, mode=mode, manual_target=manual_target)
     nc = device.total_rows
 
     print("Phase [1/2]: Initializing parameters...")
-    # Load parameters for both calculations
+    # Load parameters
     with open(fit_filename, 'rb') as f: fit = pickle.load(f)
-    with open(stats_filename, 'rb') as f: stats = pickle.load(f)
     
     # Common params
     total = fit['vals']['total']
     tjs_gpu = cupy.asarray(fit['vals']['tjs'].values, dtype=cupy.float64)
     tis_gpu = cupy.asarray(fit['vals']['tis'].values, dtype=cupy.float64)
-    
-    # Specific params
-    sizes_gpu = cupy.asarray(fit['sizes'].values, dtype=cupy.float64) # For Full
+    sizes_gpu = cupy.asarray(fit['sizes'].values, dtype=cupy.float64)
 
     # Setup Output Files
     adata_in = anndata.read_h5ad(raw_filename, backed='r')
@@ -101,29 +106,46 @@ def NBumiPearsonResidualsCombinedGPU(
     adata_out_approx = anndata.AnnData(obs=adata_in.obs, var=filtered_var)
     adata_out_approx.write_h5ad(output_filename_approx, compression=None)
     
-    # --- CHUNK SIZE FIX ---
-    # Calculate rows needed to fill ~1GB
-    storage_chunk_rows = int(1_000_000_000 / (ng_filtered * 8)) 
+    # --- VISUALIZATION SETUP (THE SIDECAR) ---
+    # 1. Sampling Rate (Target 5 Million Max)
+    TARGET_SAMPLES = 5_000_000
+    total_points = nc * ng_filtered
     
-    # [CRITICAL FIX] Clamp chunk size to total rows (nc)
-    if storage_chunk_rows > nc: 
-        storage_chunk_rows = nc
+    if total_points <= TARGET_SAMPLES:
+        sampling_rate = 1.0 # Take everything
+    else:
+        sampling_rate = TARGET_SAMPLES / total_points
         
-    if storage_chunk_rows < 1: 
-        storage_chunk_rows = 1
-    # ----------------------
+    print(f"   > Visualization Sampling Rate: {sampling_rate*100:.4f}% (Target: {TARGET_SAMPLES:,} points)")
+
+    # 2. Accumulators for Plot 1 (Variance) - EXACT MATH
+    # We need Sum(x) and Sum(x^2) for: Raw, Approx, Full
+    acc_raw_sum = cupy.zeros(ng_filtered, dtype=cupy.float64)
+    # acc_raw_sq  = cupy.zeros(ng_filtered, dtype=cupy.float64) # Not strictly needed for Mean X-axis, but good for completeness. Skipping to save VRAM.
     
-    # Open both files for writing simultaneously
+    acc_approx_sum = cupy.zeros(ng_filtered, dtype=cupy.float64)
+    acc_approx_sq  = cupy.zeros(ng_filtered, dtype=cupy.float64)
+    
+    acc_full_sum   = cupy.zeros(ng_filtered, dtype=cupy.float64)
+    acc_full_sq    = cupy.zeros(ng_filtered, dtype=cupy.float64)
+
+    # 3. Lists for Plots 2 & 3 (Scatter/KDE) - SAMPLED
+    viz_approx_samples = []
+    viz_full_samples = []
+    # -----------------------------------------
+
+    # Storage Chunk Calc
+    storage_chunk_rows = int(1_000_000_000 / (ng_filtered * 8)) 
+    if storage_chunk_rows > nc: storage_chunk_rows = nc
+    if storage_chunk_rows < 1: storage_chunk_rows = 1
+    
+    # Open files
     with h5py.File(output_filename_full, 'a') as f_full, h5py.File(output_filename_approx, 'a') as f_approx:
         if 'X' in f_full: del f_full['X']
         if 'X' in f_approx: del f_approx['X']
         
-        out_x_full = f_full.create_dataset(
-            'X', shape=(nc, ng_filtered), chunks=(storage_chunk_rows, ng_filtered), dtype='float64'
-        )
-        out_x_approx = f_approx.create_dataset(
-            'X', shape=(nc, ng_filtered), chunks=(storage_chunk_rows, ng_filtered), dtype='float64'
-        )
+        out_x_full = f_full.create_dataset('X', shape=(nc, ng_filtered), chunks=(storage_chunk_rows, ng_filtered), dtype='float64')
+        out_x_approx = f_approx.create_dataset('X', shape=(nc, ng_filtered), chunks=(storage_chunk_rows, ng_filtered), dtype='float64')
 
         with h5py.File(raw_filename, 'r') as f_in:
             h5_indptr = f_in['X']['indptr']
@@ -132,7 +154,8 @@ def NBumiPearsonResidualsCombinedGPU(
             
             current_row = 0
             while current_row < nc:
-                end_row = device.get_next_chunk(current_row, mode='dense', overhead_multiplier=3.0) # Higher overhead for double write
+                # [SAFE MODE] Multiplier 3.0 is safe for Index Sampling
+                end_row = device.get_next_chunk(current_row, mode='dense', overhead_multiplier=3.0)
                 if end_row is None or end_row <= current_row: break
 
                 chunk_size = end_row - current_row
@@ -140,7 +163,7 @@ def NBumiPearsonResidualsCombinedGPU(
 
                 start_idx, end_idx = h5_indptr[current_row], h5_indptr[end_row]
                 
-                # Load & Filter
+                # Load Raw
                 data_gpu_raw = cupy.asarray(h5_data[start_idx:end_idx], dtype=cupy.float64)
                 indices_gpu_raw = cupy.asarray(h5_indices[start_idx:end_idx])
                 indptr_gpu_raw = cupy.asarray(h5_indptr[current_row:end_row+1] - h5_indptr[current_row])
@@ -154,7 +177,23 @@ def NBumiPearsonResidualsCombinedGPU(
                 del chunk_gpu, data_gpu_raw, indices_gpu_raw, indptr_gpu_raw
                 cupy.get_default_memory_pool().free_all_blocks()
 
-                # --- CALC 1: APPROX (Cheaper, do first) ---
+                # --- VIZ ACCUMULATION 1: RAW MEAN ---
+                # Add raw sums to accumulator (column-wise sum)
+                acc_raw_sum += cupy.sum(counts_dense, axis=0)
+                
+                # --- VIZ SAMPLING: GENERATE INDICES ---
+                # We pick indices NOW so we can grab the same points from both Approx and Full
+                chunk_total_items = chunk_size * ng_filtered
+                n_samples_chunk = int(chunk_total_items * sampling_rate)
+                
+                if n_samples_chunk > 0:
+                    # Index Sampling: Zero VRAM overhead compared to Masking
+                    # Use flatten indices
+                    sample_indices = cupy.random.choice(chunk_total_items, size=n_samples_chunk, replace=False)
+                else:
+                    sample_indices = None
+
+                # --- CALC 1: APPROX ---
                 approx_out = cupy.empty_like(counts_dense)
                 pearson_approx_kernel(
                     counts_dense,
@@ -163,10 +202,22 @@ def NBumiPearsonResidualsCombinedGPU(
                     total,
                     approx_out 
                 )
+                
+                # [VIZ UPDATE: APPROX]
+                acc_approx_sum += cupy.sum(approx_out, axis=0)
+                acc_approx_sq  += cupy.sum(approx_out**2, axis=0)
+                
+                if sample_indices is not None:
+                    # Flatten temporarily to sample, then return to CPU
+                    # Note: take() returns a new array, small size
+                    sampled_vals = approx_out.ravel().take(sample_indices)
+                    viz_approx_samples.append(cupy.asnumpy(sampled_vals))
+
+                # [DISK WRITE: APPROX]
                 out_x_approx[current_row:end_row, :] = approx_out.get()
                 del approx_out
 
-                # --- CALC 2: FULL (In-place on counts_dense to save VRAM) ---
+                # --- CALC 2: FULL (In-place) ---
                 pearson_residual_kernel(
                     counts_dense,
                     tjs_gpu,
@@ -175,13 +226,130 @@ def NBumiPearsonResidualsCombinedGPU(
                     total,
                     counts_dense # Overwrite input
                 )
+                
+                # [VIZ UPDATE: FULL]
+                acc_full_sum += cupy.sum(counts_dense, axis=0)
+                acc_full_sq  += cupy.sum(counts_dense**2, axis=0)
+                
+                if sample_indices is not None:
+                    sampled_vals = counts_dense.ravel().take(sample_indices)
+                    viz_full_samples.append(cupy.asnumpy(sampled_vals))
+
+                # [DISK WRITE: FULL]
                 out_x_full[current_row:end_row, :] = counts_dense.get()
                 
-                del counts_dense
+                del counts_dense, sample_indices
                 cupy.get_default_memory_pool().free_all_blocks()
                 current_row = end_row
         
         print(f"\nPhase [2/2]: COMPLETE{' '*50}")
+
+    # ==========================================
+    #        VIZ GENERATION (POST-PROCESS)
+    # ==========================================
+    if plot_summary_filename and plot_detail_filename:
+        print("Phase [Viz]: Generating Diagnostics...")
+        
+        # 1. Finalize Variance Stats (GPU -> CPU)
+        # Var = E[X^2] - (E[X])^2
+        # Mean = Sum / N
+        
+        # Pull everything to CPU once
+        raw_sum = cupy.asnumpy(acc_raw_sum)
+        
+        approx_sum = cupy.asnumpy(acc_approx_sum)
+        approx_sq  = cupy.asnumpy(acc_approx_sq)
+        
+        full_sum   = cupy.asnumpy(acc_full_sum)
+        full_sq    = cupy.asnumpy(acc_full_sq)
+        
+        # Calculate
+        mean_raw = raw_sum / nc
+        
+        mean_approx = approx_sum / nc
+        mean_sq_approx = approx_sq / nc
+        var_approx = mean_sq_approx - (mean_approx**2)
+        
+        mean_full = full_sum / nc
+        mean_sq_full = full_sq / nc
+        var_full = mean_sq_full - (mean_full**2)
+
+        # 2. Finalize Samples
+        if viz_approx_samples:
+            flat_approx = np.concatenate(viz_approx_samples)
+            flat_full   = np.concatenate(viz_full_samples)
+        else:
+            flat_approx = np.array([])
+            flat_full = np.array([])
+            
+        print(f"   > Samples Collected: {len(flat_approx):,} points")
+
+        # --- FILE 1: SUMMARY (1080p) ---
+        print(f"   > Saving Summary Plot: {plot_summary_filename}")
+        fig1, ax1 = plt.subplots(1, 2, figsize=(16, 7)) # 16x7 inches ~ 1080p aspect
+        
+        # Plot 1: Variance Stabilization
+        ax = ax1[0]
+        ax.scatter(mean_raw, var_approx, s=2, alpha=0.5, color='red', label='Approx (Poisson)')
+        ax.scatter(mean_raw, var_full, s=2, alpha=0.5, color='blue', label='Full (NB Pearson)')
+        ax.axhline(1.0, color='black', linestyle='--', linewidth=1)
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+        ax.set_title("Variance Stabilization Check")
+        ax.set_xlabel("Mean Raw Expression (log)")
+        ax.set_ylabel("Variance of Residuals (log)")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        ax.text(0.5, -0.15, "Goal: Blue dots should form a flat line at y=1", 
+                transform=ax.transAxes, ha='center', fontsize=9, 
+                bbox=dict(facecolor='#f0f0f0', edgecolor='black', alpha=0.7))
+
+        # Plot 3: Distribution
+        ax = ax1[1]
+        if len(flat_approx) > 100:
+            # Clip for cleaner KDE
+            mask_kde = (flat_approx > -10) & (flat_approx < 10)
+            sns.kdeplot(flat_approx[mask_kde], fill=True, color='red', alpha=0.3, label='Approx', ax=ax, warn_singular=False)
+            sns.kdeplot(flat_full[mask_kde], fill=True, color='blue', alpha=0.3, label='Full', ax=ax, warn_singular=False)
+        ax.set_xlim(-5, 5)
+        ax.set_title("Distribution of Residuals")
+        ax.set_xlabel("Residual Value")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        ax.text(0.5, -0.15, "Goal: Blue curve should be tighter (narrower) than Red", 
+                transform=ax.transAxes, ha='center', fontsize=9, 
+                bbox=dict(facecolor='#f0f0f0', edgecolor='black', alpha=0.7))
+
+        plt.tight_layout()
+        plt.savefig(plot_summary_filename, dpi=120) # 120 DPI * 16 inch = 1920 width
+        plt.close()
+
+        # --- FILE 2: DETAIL (4K) ---
+        print(f"   > Saving Detail Plot: {plot_detail_filename}")
+        fig2, ax2 = plt.subplots(figsize=(20, 11)) # 20x11 inches ~ 4K aspect
+        
+        if len(flat_approx) > 0:
+            ax2.scatter(flat_approx, flat_full, s=1, alpha=0.5, color='purple')
+            
+            # Diagonal line
+            lims = [
+                np.min([ax2.get_xlim(), ax2.get_ylim()]),
+                np.max([ax2.get_xlim(), ax2.get_ylim()]),
+            ]
+            ax2.plot(lims, lims, 'k-', alpha=0.75, zorder=0)
+        
+        ax2.set_title("Residual Shrinkage (Sampled)")
+        ax2.set_xlabel("Approx Residuals")
+        ax2.set_ylabel("Full Residuals")
+        ax2.grid(True, alpha=0.3)
+        ax2.text(0.5, -0.1, "Goal: Points below diagonal = Dispersion Penalty Working", 
+                transform=ax2.transAxes, ha='center', fontsize=12, 
+                bbox=dict(facecolor='#f0f0f0', edgecolor='black', alpha=0.7))
+        
+        plt.tight_layout()
+        plt.savefig(plot_detail_filename, dpi=200) # 200 DPI * 20 inch = 4000 width (4Kish)
+        plt.close()
+
     
     if hasattr(adata_in, "file") and adata_in.file is not None: adata_in.file.close()
     print(f"Total time: {time.perf_counter() - start_time:.2f} seconds.\n")
