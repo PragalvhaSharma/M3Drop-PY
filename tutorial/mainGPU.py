@@ -52,6 +52,10 @@ COMPARISON_PLOT_FILE   = f"{DATASET_BASENAME}_4B_NBumiCompareModels.png"
 PEARSON_FULL_OUTPUT_FILE   = f"{DATASET_BASENAME}_4C_pearson_residuals.h5ad"
 PEARSON_APPROX_OUTPUT_FILE = f"{DATASET_BASENAME}_4C_pearson_residuals_approx.h5ad"
 
+# [NEW] Visualization Outputs (Passed to Stage 4C)
+PLOT_SUMMARY_FILE = f"{DATASET_BASENAME}_4C_Summary_Diagnostics.png"
+PLOT_DETAIL_FILE  = f"{DATASET_BASENAME}_4C_Residual_Shrinkage.png"
+
 
 # ==========================================
 #        MAIN PIPELINE EXECUTION
@@ -188,7 +192,13 @@ if __name__ == "__main__":
         print(">>> STAGE 4C: NORMALIZATION")
         stage4c_start = time.time()
         
-        if not os.path.exists(PEARSON_FULL_OUTPUT_FILE) or not os.path.exists(PEARSON_APPROX_OUTPUT_FILE):
+        # NOTE: We force run if plots are missing, even if h5ad exists.
+        # This ensures you get your dashboard even if you ran the math previously.
+        if (not os.path.exists(PEARSON_FULL_OUTPUT_FILE) or 
+            not os.path.exists(PEARSON_APPROX_OUTPUT_FILE) or
+            not os.path.exists(PLOT_SUMMARY_FILE) or
+            not os.path.exists(PLOT_DETAIL_FILE)):
+            
             M3Drop.NBumiPearsonResidualsCombinedGPU(
                 raw_filename=RAW_DATA_FILE,
                 mask_filename=MASK_OUTPUT_FILE,
@@ -196,11 +206,14 @@ if __name__ == "__main__":
                 stats_filename=STATS_OUTPUT_FILE,
                 output_filename_full=PEARSON_FULL_OUTPUT_FILE,
                 output_filename_approx=PEARSON_APPROX_OUTPUT_FILE,
+                # [NEW] Pass the plot filenames
+                plot_summary_filename=PLOT_SUMMARY_FILE,
+                plot_detail_filename=PLOT_DETAIL_FILE,
                 mode=CONTROL_MODE,
                 manual_target=MANUAL_TARGET
             )
         else:
-            print("   Skipping Normalization (Outputs exist)")
+            print("   Skipping Normalization (All Outputs & Plots exist)")
             
         print(f"Stage 4C Complete. Total Time: {time.time() - stage4c_start:.2f} seconds.")
         print("------------------------------------------------------------\n")
