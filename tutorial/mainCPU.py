@@ -56,7 +56,7 @@ PLOT_DETAIL_FILE  = f"{DATASET_BASENAME}_4C_Residual_Shrinkage.png"
 if __name__ == "__main__":
     pipeline_start_time = time.time()
     print(f"############################################################")
-    print(f"   M3DROP+ MASTER PIPELINE (CPU VERSION): {DATASET_BASENAME}")
+    print(f"   M3DROP mainCPU.py: {DATASET_BASENAME}")
     print(f"   Mode: {CONTROL_MODE.upper()}")
     print(f"############################################################\n")
 
