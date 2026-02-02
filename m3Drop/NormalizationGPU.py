@@ -116,7 +116,7 @@ def NBumiPearsonResidualsCombinedGPU(
     else:
         sampling_rate = TARGET_SAMPLES / total_points
         
-    print(f"   > Visualization Sampling Rate: {sampling_rate*100:.4f}% (Target: {TARGET_SAMPLES:,} points)")
+    print(f"Phase [1/2]: Visualization Sampling Rate: {sampling_rate*100:.4f}% (Target: {TARGET_SAMPLES:,} points)")
 
     # 2. Accumulators for Plot 1 (Variance) - EXACT MATH
     acc_raw_sum = cupy.zeros(ng_filtered, dtype=cupy.float64)
@@ -289,10 +289,10 @@ def NBumiPearsonResidualsCombinedGPU(
             flat_approx = np.array([])
             flat_full = np.array([])
             
-        print(f"   > Samples Collected: {len(flat_approx):,} points")
+        print(f"Phase [Viz]: Samples Collected... n = {len(flat_approx):,}")
 
         # --- FILE 1: SUMMARY (1080p) ---
-        print(f"   > Saving Summary Plot: {plot_summary_filename}")
+        print(f"Saving Summary Plot to {plot_summary_filename}")
         fig1, ax1 = plt.subplots(1, 2, figsize=(16, 7))
         
         # Plot 1: Variance Stabilization
@@ -341,7 +341,7 @@ def NBumiPearsonResidualsCombinedGPU(
         plt.close()
 
         # --- FILE 2: DETAIL (4K) ---
-        print(f"   > Saving Detail Plot: {plot_detail_filename}")
+        print(f"Saving plot detail plot to: {plot_detail_filename}")
         fig2, ax2 = plt.subplots(figsize=(20, 11))
         
         if len(flat_approx) > 0:
@@ -367,3 +367,4 @@ def NBumiPearsonResidualsCombinedGPU(
 
     if hasattr(adata_in, "file") and adata_in.file is not None: adata_in.file.close()
     print(f"Total time: {time.perf_counter() - start_time:.2f} seconds.\n")
+
