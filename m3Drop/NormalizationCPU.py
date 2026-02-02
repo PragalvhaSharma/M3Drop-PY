@@ -259,7 +259,7 @@ def NBumiPearsonResidualsCombinedCPU(
         print(f"Phase [Viz]: Samples Collected... n = {len(flat_approx):,}")
 
         # --- FILE 1: SUMMARY (1080p) ---
-        print(f"Saving Summary Plot to {plot_summary_filename}")
+        print(f"Saving plot to: {plot_summary_filename}")
         fig1, ax1 = plt.subplots(1, 2, figsize=(16, 7))
         
         # Plot 1: Variance Stabilization
@@ -299,7 +299,7 @@ def NBumiPearsonResidualsCombinedCPU(
         plt.close()
 
         # --- FILE 2: DETAIL (4K) ---
-        print(f"Saving Detail plot to: {plot_detail_filename}")
+        print(f"Saving plot to: {plot_detail_filename}")
         fig2, ax2 = plt.subplots(figsize=(20, 11))
         
         if len(flat_approx) > 0:
