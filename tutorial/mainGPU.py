@@ -52,7 +52,6 @@ COMPARISON_PLOT_FILE   = f"{DATASET_BASENAME}_4B_NBumiCompareModels.png"
 PEARSON_FULL_OUTPUT_FILE   = f"{DATASET_BASENAME}_4C_pearson_residuals.h5ad"
 PEARSON_APPROX_OUTPUT_FILE = f"{DATASET_BASENAME}_4C_pearson_residuals_approx.h5ad"
 
-# [NEW] Visualization Outputs (Passed to Stage 4C)
 PLOT_SUMMARY_FILE = f"{DATASET_BASENAME}_4C_Summary_Diagnostics.png"
 PLOT_DETAIL_FILE  = f"{DATASET_BASENAME}_4C_Residual_Shrinkage.png"
 
@@ -63,7 +62,7 @@ PLOT_DETAIL_FILE  = f"{DATASET_BASENAME}_4C_Residual_Shrinkage.png"
 if __name__ == "__main__":
     pipeline_start_time = time.time()
     print(f"############################################################")
-    print(f"   M3DROP+ MASTER PIPELINE: {DATASET_BASENAME}")
+    print(f"   M3DROP mainGPU.PY: {DATASET_BASENAME}")
     print(f"   Mode: {CONTROL_MODE.upper()}")
     if CONTROL_MODE == "manual":
         print(f"   Target: {MANUAL_TARGET}")
