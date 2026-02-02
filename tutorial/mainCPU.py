@@ -12,20 +12,15 @@ matplotlib.use('Agg')
 #        IMPORTS & SETUP (STANDALONE)
 # ==========================================
 try:
-    # Import the package as requested
     import m3Drop as M3Drop
 except ImportError as e:
     print(f"CRITICAL ERROR: Could not import the 'm3Drop' package.\nDetails: {e}")
-    print("Ensure you have installed the package (pip install .) or are running this script from a location where 'm3Drop' is visible.")
     sys.exit(1)
 
 # ==========================================
 #        MASTER CONFIGURATION
 # ==========================================
 DATASET_BASENAME = "test_data2"
-
-# Modes: "auto" (L3 Cache Optimized) | "manual" (User Defined)
-# "auto" is highly recommended for CPU to maximize L3 cache usage.
 CONTROL_MODE = "auto" 
 MANUAL_TARGET = 3000
 
@@ -50,6 +45,10 @@ COMPARISON_PLOT_FILE   = f"{DATASET_BASENAME}_4B_NBumiCompareModels.png"
 PEARSON_FULL_OUTPUT_FILE   = f"{DATASET_BASENAME}_4C_pearson_residuals.h5ad"
 PEARSON_APPROX_OUTPUT_FILE = f"{DATASET_BASENAME}_4C_pearson_residuals_approx.h5ad"
 
+# [NEW] Visualization Outputs
+PLOT_SUMMARY_FILE = f"{DATASET_BASENAME}_4C_Summary_Diagnostics.png"
+PLOT_DETAIL_FILE  = f"{DATASET_BASENAME}_4C_Residual_Shrinkage.png"
+
 
 # ==========================================
 #        MAIN PIPELINE EXECUTION
@@ -59,16 +58,11 @@ if __name__ == "__main__":
     print(f"############################################################")
     print(f"   M3DROP+ MASTER PIPELINE (CPU VERSION): {DATASET_BASENAME}")
     print(f"   Mode: {CONTROL_MODE.upper()}")
-    if CONTROL_MODE == "manual":
-        print(f"   Target: {MANUAL_TARGET}")
     print(f"############################################################\n")
 
-    # ---------------------------------------------------------
-    # STAGE 1: MASK GENERATION
-    # ---------------------------------------------------------
+    # STAGE 1: MASK
     print(">>> STAGE 1: MASK GENERATION")
     if not os.path.exists(MASK_OUTPUT_FILE):
-        # Calls M3Drop package function directly
         M3Drop.ConvertDataSparseCPU(
             input_filename=RAW_DATA_FILE,
             output_mask_filename=MASK_OUTPUT_FILE,
@@ -76,12 +70,10 @@ if __name__ == "__main__":
             manual_target=MANUAL_TARGET
         )
     else:
-        print(f"STATUS: Found existing mask '{MASK_OUTPUT_FILE}'. Skipping.")
+        print(f"STATUS: Found existing mask. Skipping.")
     print("------------------------------------------------------------\n")
 
-    # ---------------------------------------------------------
-    # STAGE 2: STATISTICS (Virtual)
-    # ---------------------------------------------------------
+    # STAGE 2: STATS
     print(">>> STAGE 2: STATISTICS CALCULATION")
     if not os.path.exists(STATS_OUTPUT_FILE):
         stats = M3Drop.hidden_calc_valsCPU(
@@ -90,18 +82,13 @@ if __name__ == "__main__":
             mode=CONTROL_MODE,
             manual_target=MANUAL_TARGET
         )
-        with open(STATS_OUTPUT_FILE, 'wb') as f:
-            pickle.dump(stats, f)
-        print(f"STATUS: Statistics saved to '{STATS_OUTPUT_FILE}'.")
+        with open(STATS_OUTPUT_FILE, 'wb') as f: pickle.dump(stats, f)
     else:
-        print(f"STATUS: Loading statistics from '{STATS_OUTPUT_FILE}'...")
-        with open(STATS_OUTPUT_FILE, 'rb') as f:
-            stats = pickle.load(f)
+        print(f"STATUS: Loading statistics...")
+        with open(STATS_OUTPUT_FILE, 'rb') as f: stats = pickle.load(f)
     print("------------------------------------------------------------\n")
 
-    # ---------------------------------------------------------
-    # STAGE 3: MODEL FITTING (Virtual)
-    # ---------------------------------------------------------
+    # STAGE 3: FITTING
     print(">>> STAGE 3: MODEL FITTING")
     if not os.path.exists(FIT_OUTPUT_FILE):
         fit_results = M3Drop.NBumiFitModelCPU(
@@ -111,59 +98,35 @@ if __name__ == "__main__":
             mode=CONTROL_MODE,
             manual_target=MANUAL_TARGET
         )
-        with open(FIT_OUTPUT_FILE, 'wb') as f:
-            pickle.dump(fit_results, f)
-        print(f"STATUS: Fit results saved to '{FIT_OUTPUT_FILE}'.")
+        with open(FIT_OUTPUT_FILE, 'wb') as f: pickle.dump(fit_results, f)
     else:
-        print(f"STATUS: Loading fit results from '{FIT_OUTPUT_FILE}'...")
-        with open(FIT_OUTPUT_FILE, 'rb') as f:
-            fit_results = pickle.load(f)
+        print(f"STATUS: Loading fit results...")
+        with open(FIT_OUTPUT_FILE, 'rb') as f: fit_results = pickle.load(f)
     print("------------------------------------------------------------\n")
 
-    # ---------------------------------------------------------
     # STAGE 4A: FEATURE SELECTION
-    # ---------------------------------------------------------
     if RUN_FEATURE_SELECTION:
         print(">>> STAGE 4A: FEATURE SELECTION")
-        stage4a_start = time.time()
-        
         if not os.path.exists(HIGH_VAR_OUTPUT_CSV):
-            high_var_genes = M3Drop.NBumiFeatureSelectionHighVarCPU(fit=fit_results)
-            high_var_genes.to_csv(HIGH_VAR_OUTPUT_CSV, index=False)
-        else:
-            print(f"   Skipping High Variance (Output exists)")
+            M3Drop.NBumiFeatureSelectionHighVarCPU(fit=fit_results).to_csv(HIGH_VAR_OUTPUT_CSV, index=False)
 
         if not os.path.exists(COMBINED_DROP_OUTPUT_CSV):
-            combined_drop_genes = M3Drop.NBumiFeatureSelectionCombinedDropCPU(
+            cdf = M3Drop.NBumiFeatureSelectionCombinedDropCPU(
                 fit=fit_results,
                 raw_filename=RAW_DATA_FILE,
                 mode=CONTROL_MODE,
                 manual_target=MANUAL_TARGET
             )
-            combined_drop_genes.to_csv(COMBINED_DROP_OUTPUT_CSV, index=False)
-            
+            cdf.to_csv(COMBINED_DROP_OUTPUT_CSV, index=False)
             if not os.path.exists(VOLCANO_PLOT_FILE):
-                M3Drop.NBumiCombinedDropVolcanoCPU(
-                    results_df=combined_drop_genes,
-                    plot_filename=VOLCANO_PLOT_FILE
-                )
-        else:
-            print(f"   Skipping Combined Dropout (Output exists)")
-            
-        print(f"Total Time: {time.time() - stage4a_start:.2f} seconds.")
+                M3Drop.NBumiCombinedDropVolcanoCPU(results_df=cdf, plot_filename=VOLCANO_PLOT_FILE)
         print("------------------------------------------------------------\n")
 
-    # ---------------------------------------------------------
     # STAGE 4B: DIAGNOSTICS
-    # ---------------------------------------------------------
     if RUN_DIAGNOSTICS:
         print(">>> STAGE 4B: DIAGNOSTICS")
-        
         if not os.path.exists(DISP_VS_MEAN_PLOT_FILE):
-            M3Drop.NBumiPlotDispVsMeanCPU(
-                 fit=fit_results,
-                 plot_filename=DISP_VS_MEAN_PLOT_FILE
-            )
+            M3Drop.NBumiPlotDispVsMeanCPU(fit=fit_results, plot_filename=DISP_VS_MEAN_PLOT_FILE)
         
         if not os.path.exists(COMPARISON_PLOT_FILE):
             M3Drop.NBumiCompareModelsCPU(
@@ -175,18 +138,18 @@ if __name__ == "__main__":
                 mode=CONTROL_MODE,
                 manual_target=MANUAL_TARGET
             )
-        else:
-            print(f"   Skipping Comparison (Plot exists)")
         print("------------------------------------------------------------\n")
 
-    # ---------------------------------------------------------
-    # STAGE 4C: NORMALIZATION (Optimized: Combined)
-    # ---------------------------------------------------------
+    # STAGE 4C: NORMALIZATION (Updated for Sidecar Viz)
     if RUN_NORMALIZATION:
         print(">>> STAGE 4C: NORMALIZATION")
-        stage4c_start = time.time()
         
-        if not os.path.exists(PEARSON_FULL_OUTPUT_FILE) or not os.path.exists(PEARSON_APPROX_OUTPUT_FILE):
+        # Check if PLOTS exist (force run if plots are missing, even if h5ad exists)
+        if (not os.path.exists(PEARSON_FULL_OUTPUT_FILE) or 
+            not os.path.exists(PEARSON_APPROX_OUTPUT_FILE) or
+            not os.path.exists(PLOT_SUMMARY_FILE) or
+            not os.path.exists(PLOT_DETAIL_FILE)):
+            
             M3Drop.NBumiPearsonResidualsCombinedCPU(
                 raw_filename=RAW_DATA_FILE,
                 mask_filename=MASK_OUTPUT_FILE,
@@ -194,16 +157,16 @@ if __name__ == "__main__":
                 stats_filename=STATS_OUTPUT_FILE,
                 output_filename_full=PEARSON_FULL_OUTPUT_FILE,
                 output_filename_approx=PEARSON_APPROX_OUTPUT_FILE,
+                # [NEW] Pass the plot filenames
+                plot_summary_filename=PLOT_SUMMARY_FILE,
+                plot_detail_filename=PLOT_DETAIL_FILE,
                 mode=CONTROL_MODE,
                 manual_target=MANUAL_TARGET
             )
         else:
-            print("   Skipping Normalization (Outputs exist)")
+            print("   Skipping Normalization (All Outputs & Plots exist)")
             
-        print(f"Stage 4C Complete. Total Time: {time.time() - stage4c_start:.2f} seconds.")
         print("------------------------------------------------------------\n")
 
     total_time = time.time() - pipeline_start_time
-    print(f"############################################################")
-    print(f" PIPELINE COMPLETE: {total_time/60:.2f} minutes")
-    print(f"############################################################")
+    print(f"PIPELINE COMPLETE: {total_time/60:.2f} minutes")
