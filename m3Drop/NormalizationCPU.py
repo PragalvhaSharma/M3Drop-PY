@@ -299,7 +299,7 @@ def NBumiPearsonResidualsCombinedCPU(
         plt.close()
 
         # --- FILE 2: DETAIL (4K) ---
-        print(f"Saving plot detail plot to: {plot_detail_filename}")
+        print(f"Saving Detail plot to: {plot_detail_filename}")
         fig2, ax2 = plt.subplots(figsize=(20, 11))
         
         if len(flat_approx) > 0:
