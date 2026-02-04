@@ -13,13 +13,31 @@ from scipy import sparse
 from scipy import stats
 import anndata
 
-from .ControlDeviceGPU import ControlDevice
-from .CoreGPU import (
-    hidden_calc_valsGPU, 
-    NBumiFitModelGPU, 
-    NBumiFitDispVsMeanGPU, 
-    dropout_prob_kernel
-)
+# ==========================================
+#      HYBRID IMPORT (PACKAGE VS LOCAL)
+# ==========================================
+try:
+    # Case 1: Package
+    from .ControlDeviceGPU import ControlDevice
+    from .CoreGPU import (
+        hidden_calc_valsGPU, 
+        NBumiFitModelGPU, 
+        NBumiFitDispVsMeanGPU, 
+        dropout_prob_kernel
+    )
+except ImportError:
+    # Case 2: Local
+    try:
+        from ControlDeviceGPU import ControlDevice
+        from CoreGPU import (
+            hidden_calc_valsGPU, 
+            NBumiFitModelGPU, 
+            NBumiFitDispVsMeanGPU, 
+            dropout_prob_kernel
+        )
+    except ImportError:
+        print("CRITICAL ERROR: Dependencies (ControlDeviceGPU, CoreGPU) not found.")
+        sys.exit(1)
 
 from cupy.sparse import csr_matrix as cp_csr_matrix
 import scipy.sparse as sp
