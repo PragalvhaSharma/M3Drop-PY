@@ -14,9 +14,29 @@ import statsmodels.api as sm
 from scipy.stats import norm
 from statsmodels.stats.multitest import multipletests
 
-# [FIX] Strict Relative Imports
-from .ControlDeviceCPU import ControlDevice
-from .CoreCPU import hidden_calc_valsCPU, NBumiFitModelCPU, NBumiFitDispVsMeanCPU, dropout_prob_kernel_cpu
+# ==========================================
+#        HYBRID IMPORT (PACKAGE VS LOCAL)
+# ==========================================
+
+# [FIX] Hybrid Import: ControlDeviceCPU
+try:
+    from .ControlDeviceCPU import ControlDevice
+except ImportError:
+    try:
+        from ControlDeviceCPU import ControlDevice
+    except ImportError:
+        print("CRITICAL ERROR: 'ControlDeviceCPU.py' not found.")
+        sys.exit(1)
+
+# [FIX] Hybrid Import: CoreCPU
+try:
+    from .CoreCPU import hidden_calc_valsCPU, NBumiFitModelCPU, NBumiFitDispVsMeanCPU, dropout_prob_kernel_cpu
+except ImportError:
+    try:
+        from CoreCPU import hidden_calc_valsCPU, NBumiFitModelCPU, NBumiFitDispVsMeanCPU, dropout_prob_kernel_cpu
+    except ImportError:
+        print("CRITICAL ERROR: 'CoreCPU.py' not found.")
+        sys.exit(1)
 
 # ==========================================
 #        DIAGNOSTICS & COMPARISON (CPU)
@@ -244,7 +264,7 @@ def NBumiCompareModelsCPU(
     stats: dict,
     fit_adjust: dict,
     mask_filename: str = None, 
-    mode: str = "auto",
+    mode: str = "auto", 
     manual_target: int = 3000,
     suppress_plot=False,
     plot_filename=None
