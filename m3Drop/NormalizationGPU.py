@@ -18,10 +18,14 @@ except ImportError:
     cupy = None
     HAS_GPU = False
 
-# Package-compatible import
+# ==========================================
+#      HYBRID IMPORT (PACKAGE VS LOCAL)
+# ==========================================
 try:
+    # Case 1: Package
     from .ControlDeviceGPU import ControlDevice
 except ImportError:
+    # Case 2: Local
     try:
         from ControlDeviceGPU import ControlDevice
     except ImportError:
@@ -367,6 +371,3 @@ def NBumiPearsonResidualsCombinedGPU(
 
     if hasattr(adata_in, "file") and adata_in.file is not None: adata_in.file.close()
     print(f"Total time: {time.perf_counter() - start_time:.2f} seconds.\n")
-
-
-
