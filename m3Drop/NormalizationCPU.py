@@ -16,8 +16,19 @@ except ImportError:
     print("CRITICAL ERROR: 'numba' not found. Please install it (pip install numba).")
     sys.exit(1)
 
-# Strict Relative Import
-from .ControlDeviceCPU import ControlDevice
+# ==========================================
+#        HYBRID IMPORT (PACKAGE VS LOCAL)
+# ==========================================
+try:
+    # Case 1: Running as an installed package
+    from .ControlDeviceCPU import ControlDevice
+except ImportError:
+    # Case 2: Running locally
+    try:
+        from ControlDeviceCPU import ControlDevice
+    except ImportError:
+        print("CRITICAL ERROR: 'ControlDeviceCPU.py' not found.")
+        sys.exit(1)
 
 # ==========================================
 #        NUMBA KERNELS (CPU)
