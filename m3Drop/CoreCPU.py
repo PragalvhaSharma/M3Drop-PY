@@ -22,10 +22,19 @@ from scipy.stats import norm
 from scipy import sparse
 from statsmodels.stats.multitest import multipletests
 
-# [FIX] Strict Relative Import
-# This ensures that if ControlDeviceCPU fails to load (e.g. missing dependency), 
-# the real error is shown instead of being masked.
-from .ControlDeviceCPU import ControlDevice
+# ==========================================
+#        HYBRID IMPORT (PACKAGE VS LOCAL)
+# ==========================================
+try:
+    # Case 1: Running as an installed package
+    from .ControlDeviceCPU import ControlDevice
+except ImportError:
+    # Case 2: Running locally
+    try:
+        from ControlDeviceCPU import ControlDevice
+    except ImportError:
+        print("CRITICAL ERROR: 'ControlDeviceCPU.py' not found.")
+        sys.exit(1)
 
 # ==========================================
 #        NUMBA KERNELS (CPU OPTIMIZED)
