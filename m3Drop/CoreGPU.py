@@ -22,8 +22,19 @@ import matplotlib.pyplot as plt
 from scipy.stats import norm
 from statsmodels.stats.multitest import multipletests
 
-# Package-compatible import
-from .ControlDeviceGPU import ControlDevice
+# ==========================================
+#      HYBRID IMPORT (PACKAGE VS LOCAL)
+# ==========================================
+try:
+    # Case 1: Running as an installed package (e.g. import m3drop.CoreGPU)
+    from .ControlDeviceGPU import ControlDevice
+except ImportError:
+    # Case 2: Running locally (e.g. python CoreGPU.py)
+    try:
+        from ControlDeviceGPU import ControlDevice
+    except ImportError:
+        print("CRITICAL ERROR: 'ControlDeviceGPU.py' not found.")
+        sys.exit(1)
 
 # ==========================================
 #        FUSED KERNELS
