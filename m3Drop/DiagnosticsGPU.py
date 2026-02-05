@@ -9,6 +9,7 @@ import time
 import pickle
 import psutil
 import gc
+import sys
 from scipy import sparse
 from scipy import stats
 import anndata
@@ -403,9 +404,11 @@ def NBumiPlotDispVsMeanGPU(
     mean_expression = fit['vals']['tjs'].values / fit['vals']['nc']
     sizes = fit['sizes'].values
     
+    # 1. Get calibrated coefficients (using the fixed CoreGPU logic)
     coeffs = NBumiFitDispVsMeanGPU(fit, suppress_plot=True)
     intercept, slope = coeffs[0], coeffs[1]
 
+    # 2. Calculate the regression line
     log_mean_expr_range = np.linspace(
         np.log(mean_expression[mean_expression > 0].min()),
         np.log(mean_expression.max()),
@@ -414,8 +417,19 @@ def NBumiPlotDispVsMeanGPU(
     log_fitted_sizes = intercept + slope * log_mean_expr_range
     fitted_sizes = np.exp(log_fitted_sizes)
 
+    # 3. [FIX] Mask the 10k outliers for the SCATTER PLOT
+    # We create a visualization mask to hide the distracting "roof" at y=10000
+    mask_viz = (sizes < 9999.0) & (sizes > 0)
+    
+    mean_expr_clean = mean_expression[mask_viz]
+    sizes_clean = sizes[mask_viz]
+
     plt.figure(figsize=(8, 6))
-    plt.scatter(mean_expression, sizes, label='Observed Dispersion', alpha=0.5, s=8)
+    
+    # Plot only the clean data
+    plt.scatter(mean_expr_clean, sizes_clean, label='Observed Dispersion', alpha=0.5, s=8)
+    
+    # Plot the regression line (which was calculated correctly via CoreGPU)
     plt.plot(np.exp(log_mean_expr_range), fitted_sizes, color='red', label='Regression Fit', linewidth=2)
 
     plt.xscale('log')
