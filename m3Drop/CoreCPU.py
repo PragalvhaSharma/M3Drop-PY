@@ -332,9 +332,17 @@ def NBumiFitDispVsMeanCPU(fit: dict, suppress_plot=True):
     tjs = vals['tjs'].values
     mean_expression = tjs / vals['nc']
     
-    forfit = (np.isfinite(size_g)) & (size_g < 1e6) & (mean_expression > 1e-3) & (size_g > 0)
+    # [FIX] Filter out the 10,000 imputation values.
+    # We treat 10,000 as an error code for "Under-Dispersed/Poissonian".
+    # Masking these prevents artificial gravity from pulling the regression line up.
+    forfit = (np.isfinite(size_g)) & \
+             (size_g < 9999.0) & \
+             (mean_expression > 1e-3) & \
+             (size_g > 0)
+
     log2_mean_expr = np.log2(mean_expression, where=(mean_expression > 0))
     
+    # Heuristic: If we have enough high-expression genes, focus fit there
     higher = log2_mean_expr > 4
     if np.sum(higher & forfit) > 2000:
         forfit = higher & forfit
@@ -347,8 +355,10 @@ def NBumiFitDispVsMeanCPU(fit: dict, suppress_plot=True):
     
     if not suppress_plot:
         plt.figure(figsize=(7, 6))
-        plt.scatter(x, y, alpha=0.5, s=1)
-        plt.plot(x, model.fittedvalues, color='red')
+        # Plot ALL points (grey) vs FITTED points (blue)
+        plt.scatter(np.log(mean_expression), np.log(size_g), alpha=0.3, s=1, c='grey', label='All Genes')
+        plt.scatter(x, y, alpha=0.5, s=1, c='blue', label='Used for Fit')
+        plt.plot(x, model.fittedvalues, color='red', label='Regression Fit')
         plt.show()
 
     return model.params
