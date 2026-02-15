@@ -1,3 +1,4 @@
+```mermaid
 graph TD
     %% STYLING
     classDef storage fill:#f9f,stroke:#333,stroke-width:2px;
@@ -45,3 +46,4 @@ graph TD
 
     %% ANNOTATIONS
     linkStyle 6 stroke:red,stroke-width:2px;
+```
